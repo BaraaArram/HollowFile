@@ -1,0 +1,40 @@
+{
+  "name": "hollowfile",
+  "version": "1.0.0",
+  "description": "A simple Electron app for managing files.",
+  "license": "ISC",
+  "author": "Baraa Abdullah Arram <your-email@example.com>",
+  "type": "commonjs",
+  "main": "main.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "electron .",
+    "dev": "electron .",
+    "build": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^36.2.0",
+    "electron-builder": "^24.0.0"
+  },
+  "dependencies": {
+    "axios": "^1.9.0",
+    "axios-retry": "^4.5.0",
+    "colors": "^1.4.0",
+    "dotenv": "^16.5.0",
+    "node-fetch": "^3.3.2",
+    "winston": "^3.17.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yourusername/hollowfile.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yourusername/hollowfile/issues"
+  },
+  "homepage": "https://github.com/yourusername/hollowfile#readme",
+  "keywords": [
+    "electron",
+    "file-manager",
+    "desktop-app"
+  ]
+}
