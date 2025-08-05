@@ -10,7 +10,9 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "electron .",
     "dev": "electron .",
-    "build": "electron-builder"
+    "build:renderer": "cd src/renderer && npm install && npm run build",
+    "build:electron": "electron-builder",
+    "dist": "npm run build:renderer && npm run build:electron"
   },
   "devDependencies": {
     "electron": "^36.2.0",
@@ -37,5 +39,27 @@
     "electron",
     "file-manager",
     "desktop-app"
-  ]
+  ],
+  "build": {
+    "appId": "com.yourcompany.hollowfile",
+    "files": [
+      "main.js",
+      "preload.js",
+      "fileUtils.js",
+      "services/",
+      "handlers/",
+      "utils/",
+      "videoSearch.js",
+      "results/",
+      "src/renderer/dist/",
+      "package.json",
+      ".env"
+    ],
+    "directories": {
+      "buildResources": "assets"
+    },
+    "win": {
+      "target": "nsis"
+    }
+  }
 }

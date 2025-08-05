@@ -8,7 +8,8 @@ const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 
-async function searchVideoType(originalName, parsedTitle, dirPath) {
+async function searchVideoType(originalName, parsedTitle, dirPath, progressCallback, options = {}) {
+  const { downloadCastImages = true } = options;
   apiLogger.debug('Parsed title object', parsedTitle);
   const titleList = parsedTitle.extendedTitles;
   if (!Array.isArray(titleList)) {
@@ -108,7 +109,8 @@ async function searchVideoType(originalName, parsedTitle, dirPath) {
         (tvResult.show.first_air_date || '').slice(0, 4),
         dirPath,
         false,
-        { show: tvResult.show, episode: tvResult.episode, credits }
+        { show: tvResult.show, episode: tvResult.episode, credits },
+        downloadCastImages
       );
       // Always set info.final to the returned finalWithPosterPath
       return {
@@ -281,7 +283,8 @@ async function searchVideoType(originalName, parsedTitle, dirPath) {
       bestMatchObj.resultYear,
       dirPath,
       isMismatch,
-      { movie: fullDetails || bestOverall, credits }
+      { movie: fullDetails || bestOverall, credits },
+      downloadCastImages
     );
     info.type = bestType;
     info.apiInfo = bestApiInfo ? [bestApiInfo] : [];

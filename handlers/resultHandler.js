@@ -1,20 +1,42 @@
-const path = require('path');
-const { api: apiLogger, download: downloadLogger, result: resultLogger } = require('../logger.js');
-const { downloadImage } = require('../utils/imgDownloader.js');
-const { writeResult, readResults } = require('../services/resultsService');
-const fs = require('fs');
 const { emitScanProgress } = require('../services/scanProgressService');
+const fs = require('fs');
+const path = require('path');
+const axios = require('axios');
+const apiLogger = require('../utils/logger').apiLogger;
+const resultLogger = require('../utils/logger').resultLogger;
 
-async function handleMatchedResult(originalName, result, resultYear, dirPath, isMismatch = false, fullApiData = null, currentFileIndex = 1, totalFiles = 1) {
+async function downloadImage(url, localPath) {
+  try {
+    const response = await axios.get(url, { responseType: 'stream' });
+    const writer = fs.createWriteStream(localPath);
+    response.data.pipe(writer);
+    return new Promise((resolve, reject) => {
+      writer.on('finish', resolve);
+      writer.on('error', reject);
+    });
+  } catch (error) {
+    apiLogger.error(`Failed to download image from ${url}: ${error.message}`);
+    throw error;
+  }
+}
+
+async function handleMatchedResult(originalName, result, resultYear, dirPath, isMismatch = false, fullApiData = null, currentFileIndex = 1, totalFiles = 1, downloadCastImages = true) {
   emitScanProgress('parsing', originalName, { currentFileIndex, totalFiles });
-  const posterPath = path.resolve(dirPath, "Posters", `${result.title || result.name}_${resultYear}.jpg`);
-  // Use 'poster' property from normalized result
+  
+  // Create directories if they don't exist
+  const postersDir = path.resolve(dirPath, "Posters");
+  if (!fs.existsSync(postersDir)) fs.mkdirSync(postersDir, { recursive: true });
+  
+  const posterPath = path.resolve(postersDir, `${result.title || result.name}_${resultYear}.jpg`);
   const posterUrl = result.poster ? `https://image.tmdb.org/t/p/w500${result.poster}` : null;
 
+  // Download poster asynchronously (don't wait for it)
   if (posterUrl) {
     emitScanProgress('downloading-poster', originalName, { currentFileIndex, totalFiles });
     apiLogger.info(`Attempting to download poster: ${posterUrl}`);
-    await downloadImage(posterUrl, posterPath);
+    downloadImage(posterUrl, posterPath).catch(e => {
+      apiLogger.warn(`Failed to download poster for ${originalName}: ${e.message}`);
+    });
   } else {
     apiLogger.warn(`No poster available for result: ${JSON.stringify(result)}`);
   }
@@ -23,26 +45,32 @@ async function handleMatchedResult(originalName, result, resultYear, dirPath, is
   const peopleDir = path.resolve(__dirname, '../results/people');
   if (!fs.existsSync(peopleDir)) fs.mkdirSync(peopleDir, { recursive: true });
   let castIds = [], crewIds = [];
-  if (fullApiData && fullApiData.credits) {
+  
+  // Download cast/crew images asynchronously (don't wait for them)
+  if (downloadCastImages && fullApiData && fullApiData.credits) {
     // Save cast
     if (Array.isArray(fullApiData.credits.cast)) {
       for (const person of fullApiData.credits.cast) {
         if (!person.id) continue;
         const personFile = path.join(peopleDir, `${person.id}.json`);
         if (!fs.existsSync(personFile)) {
-          // Download profile image if available
-          let profilePath = null;
+          // Download profile image if available (async)
           if (person.profile_path) {
             const profileUrl = `https://image.tmdb.org/t/p/w185${person.profile_path}`;
             const localProfilePath = path.join(peopleDir, `${person.id}.jpg`);
-            try {
-              emitScanProgress('downloading-cast-image', originalName, { personName: person.name, currentFileIndex, totalFiles });
-              await downloadImage(profileUrl, localProfilePath);
-              profilePath = localProfilePath.replace(/\\/g, '/');
-            } catch (e) { profilePath = null; }
-          }
-          const personData = { ...person, profile_path: profilePath };
+            emitScanProgress('downloading-cast-image', originalName, { personName: person.name, currentFileIndex, totalFiles });
+            downloadImage(profileUrl, localProfilePath).then(() => {
+              const personData = { ...person, profile_path: localProfilePath.replace(/\\/g, '/') };
+              fs.writeFileSync(personFile, JSON.stringify(personData, null, 2));
+            }).catch(e => {
+              apiLogger.warn(`Failed to download cast image for ${person.name}: ${e.message}`);
+              const personData = { ...person, profile_path: null };
+              fs.writeFileSync(personFile, JSON.stringify(personData, null, 2));
+            });
+          } else {
+            const personData = { ...person, profile_path: null };
           fs.writeFileSync(personFile, JSON.stringify(personData, null, 2));
+          }
         }
         castIds.push(person.id);
       }
@@ -53,19 +81,23 @@ async function handleMatchedResult(originalName, result, resultYear, dirPath, is
         if (!person.id) continue;
         const personFile = path.join(peopleDir, `${person.id}.json`);
         if (!fs.existsSync(personFile)) {
-          // Download profile image if available
-          let profilePath = null;
+          // Download profile image if available (async)
           if (person.profile_path) {
             const profileUrl = `https://image.tmdb.org/t/p/w185${person.profile_path}`;
             const localProfilePath = path.join(peopleDir, `${person.id}.jpg`);
-            try {
-              emitScanProgress('downloading-crew-image', originalName, { personName: person.name, currentFileIndex, totalFiles });
-              await downloadImage(profileUrl, localProfilePath);
-              profilePath = localProfilePath.replace(/\\/g, '/');
-            } catch (e) { profilePath = null; }
-          }
-          const personData = { ...person, profile_path: profilePath };
+            emitScanProgress('downloading-crew-image', originalName, { personName: person.name, currentFileIndex, totalFiles });
+            downloadImage(profileUrl, localProfilePath).then(() => {
+              const personData = { ...person, profile_path: localProfilePath.replace(/\\/g, '/') };
+              fs.writeFileSync(personFile, JSON.stringify(personData, null, 2));
+            }).catch(e => {
+              apiLogger.warn(`Failed to download crew image for ${person.name}: ${e.message}`);
+              const personData = { ...person, profile_path: null };
+              fs.writeFileSync(personFile, JSON.stringify(personData, null, 2));
+            });
+          } else {
+            const personData = { ...person, profile_path: null };
           fs.writeFileSync(personFile, JSON.stringify(personData, null, 2));
+          }
         }
         crewIds.push(person.id);
       }
@@ -111,6 +143,51 @@ async function handleMatchedResult(originalName, result, resultYear, dirPath, is
   return resultData;
 }
 
+function readResults() {
+  const resultsDir = path.resolve(__dirname, '../results');
+  if (!fs.existsSync(resultsDir)) {
+    fs.mkdirSync(resultsDir, { recursive: true });
+    return [];
+  }
+  
+  const results = [];
+  const files = fs.readdirSync(resultsDir);
+  
+  for (const file of files) {
+    if (file.endsWith('.json')) {
+      try {
+        const filePath = path.join(resultsDir, file);
+        const content = fs.readFileSync(filePath, 'utf8');
+        const result = JSON.parse(content);
+        results.push(result);
+      } catch (error) {
+        resultLogger.error(`Error reading result file ${file}: ${error.message}`);
+      }
+    }
+  }
+  
+  return results;
+}
+
+function addOrUpdateResult(newResult) {
+  const resultsDir = path.resolve(__dirname, '../results');
+  if (!fs.existsSync(resultsDir)) {
+    fs.mkdirSync(resultsDir, { recursive: true });
+  }
+  
+  const filename = `${newResult.original_name.replace(/[^a-zA-Z0-9]/g, '_')}.json`;
+  const filePath = path.join(resultsDir, filename);
+  
+  try {
+    fs.writeFileSync(filePath, JSON.stringify(newResult, null, 2));
+    resultLogger.info(`Result saved to ${filePath}`);
+  } catch (error) {
+    resultLogger.error(`Error saving result to ${filePath}: ${error.message}`);
+  }
+}
+
 module.exports = {
-  handleMatchedResult
+  handleMatchedResult,
+  readResults,
+  addOrUpdateResult
 };

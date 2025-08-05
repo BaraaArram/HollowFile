@@ -399,31 +399,59 @@ function App() {
   const [scanErrors, setScanErrors] = useState([]);
 
   useEffect(() => {
+    console.log('=== APP STARTUP DEBUG ===');
+    console.log('App useEffect - checking window.api:', !!window.api);
+    console.log('App useEffect - checking window.api.onScanProgress:', !!window.api?.onScanProgress);
+    console.log('window.api object:', window.api);
+    
+    // Test IPC communication
+    if (window.api && window.api.getSavedDir) {
+      console.log('Testing IPC communication...');
+      window.api.getSavedDir().then(result => {
+        console.log('IPC test result:', result);
+      }).catch(err => {
+        console.error('IPC test failed:', err);
+      });
+    }
+    
     if (window.api && window.api.onScanProgress) {
+      console.log('Setting up scan progress listener...');
       const unsub = window.api.onScanProgress((progress) => {
+        console.log('Received scan progress:', progress);
         setScanStatus(progress);
-        // Always show modal if scanning or error
-        if (
-          progress.status !== 'scan-complete' ||
-          progress.error
-        ) {
-          setShowScanModal(true);
+        
+        // Show modal for any scanning activity
+        if (progress.status && progress.status !== 'scan-complete') {
+          console.log('Setting showScanModal to true');
+        setShowScanModal(true);
         }
+        
         // Track errors
         if (progress.error) {
           setScanErrors(prev => [...prev, { file: progress.filename, error: progress.error }]);
         }
-        // Hide modal after scan-complete
+        
+        // Hide modal after scan-complete with delay
         if (progress.status === 'scan-complete') {
-          setTimeout(() => setShowScanModal(false), 1200);
+          setTimeout(() => {
+            setShowScanModal(false);
+            setScanErrors([]); // Clear errors on completion
+          }, 2000);
         }
       });
-      return () => { unsub && unsub(); };
+      console.log('Scan progress listener set up successfully');
+      return () => { 
+        console.log('Cleaning up scan progress listener');
+        unsub && unsub(); 
+      };
+    } else {
+      console.log('window.api or window.api.onScanProgress not available');
+      console.log('Available window.api methods:', window.api ? Object.keys(window.api) : 'none');
     }
   }, []);
 
-  // Debug: log scanStatus to verify error presence
-  if (scanStatus) console.log('scanStatus:', scanStatus);
+  // Debug: log current state
+  console.log('App render - showScanModal:', showScanModal, 'scanStatus:', scanStatus);
 
   return (
     <Router>
@@ -452,10 +480,9 @@ function App() {
             color: 'var(--hk-accent)',
             border: '1px solid var(--hk-border)'
           }}>
-            <div style={{color: 'red', fontWeight: 900, fontSize: 24, marginBottom: 16}}>MODAL IS RENDERING</div>
             <div style={{ fontWeight: 900, fontSize: 26, marginBottom: 18 }}>Scanning Library...</div>
             <div style={{ fontSize: 18, marginBottom: 10 }}>
-              <b>Step:</b> {scanStatus.status.replace(/-/g, ' ')}
+              <b>Step:</b> {scanStatus.status ? scanStatus.status.replace(/-/g, ' ') : 'Processing...'}
             </div>
             {scanStatus.filename && (
               <div style={{ fontSize: 16, marginBottom: 8, wordBreak: 'break-word' }}>

@@ -54,7 +54,8 @@ export default function SettingsPage({ onBundleCollectionsChange }) {
       () => {
         setStatus(`Scan complete: ${currentDir}`);
         scanInProgress.current = false;
-      }
+      },
+      { downloadCastImages } // Pass the option
     );
   };
 

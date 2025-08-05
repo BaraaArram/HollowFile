@@ -38,25 +38,41 @@ function addError(error) {
 
 // Emit scan progress to the renderer
 function emitScanProgress(status, filename, extra = {}) {
-  if (!mainWindow || !mainWindow.webContents) return;
+  if (!mainWindow || !mainWindow.webContents) {
+    console.log('[emitScanProgress] No mainWindow or webContents available');
+    return;
+  }
 
   // Update current scan state
   currentScan.status = status;
   currentScan.filename = filename;
+  
+  // Safely update values, ensuring numbers are numbers
   if (extra.personName) currentScan.personName = extra.personName;
-  if (extra.currentFileIndex) currentScan.currentFileIndex = extra.currentFileIndex;
-  if (extra.totalFiles) currentScan.totalFiles = extra.totalFiles;
+  if (extra.currentFileIndex !== undefined) {
+    currentScan.currentFileIndex = Number(extra.currentFileIndex) || 0;
+  }
+  if (extra.totalFiles !== undefined) {
+    currentScan.totalFiles = Number(extra.totalFiles) || 0;
+  }
   if (extra.error) addError(extra.error);
 
-  // Send progress update
+  // Create progress object with proper types
   const progress = {
-    ...currentScan,
-    ...extra,
-    status,
-    filename,
+    totalFiles: currentScan.totalFiles,
+    currentFileIndex: currentScan.currentFileIndex,
+    status: currentScan.status,
+    filename: currentScan.filename,
+    personName: currentScan.personName,
+    errors: [...currentScan.errors],
+    ...extra, // Spread extra after setting core values
   };
 
-  console.log('[emitScanProgress]', progress); // Debug log
+  // Ensure critical values are numbers
+  progress.currentFileIndex = Number(progress.currentFileIndex) || 0;
+  progress.totalFiles = Number(progress.totalFiles) || 0;
+
+  console.log('[emitScanProgress] Sending to renderer:', progress);
   mainWindow.webContents.send('scan-progress', progress);
 }
 
