@@ -1,0 +1,33 @@
+@import './index.css';
+
+/* Minimal resets and utility classes for Hollow Knight theme */
+* {
+  box-sizing: border-box;
+}
+
+img {
+  max-width: 100%;
+  display: block;
+}
+
+.hk-modal {
+  background: var(--hk-bg-alt);
+  color: var(--hk-text);
+  border-radius: var(--hk-radius);
+  box-shadow: var(--hk-shadow);
+  padding: 2rem;
+  max-width: 600px;
+  margin: 2rem auto;
+  position: relative;
+}
+
+.hk-modal-close {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  background: none;
+  border: none;
+  color: var(--hk-accent);
+  font-size: 2rem;
+  cursor: pointer;
+}

@@ -1,12 +1,15 @@
 const axios = require('axios');
 require('dotenv').config();
-const { computeScore } = require('../utils/similarity'); // Change this to use computeScore
+const { computeScore, getSimilarity, computeEpisodeScore } = require('../utils/similarity'); // Change this to use computeScore
 const { api: apiLogger, download: downloadLogger, result: resultLogger } = require('../logger.js');
 
 const MAX_YEAR_DIFFERENCE = 2;
 
 async function searchTMDB(query, expectedYear, mediaType = 'multi') {
+  // TEMP: Log the API key and URL for debugging
+  console.log('TMDB API KEY:', process.env.TMDB_API_KEY);
   const url = `https://api.themoviedb.org/3/search/${mediaType}?api_key=${process.env.TMDB_API_KEY}&query=${encodeURIComponent(query)}&year=${expectedYear}`;
+  console.log('TMDB URL:', url);
   
   apiLogger.info(`Starting TMDB search`, { 
     query, 
@@ -17,6 +20,7 @@ async function searchTMDB(query, expectedYear, mediaType = 'multi') {
   
   try {
     const response = await axios.get(url);
+    console.log('TMDB Response:', response.data); // TEMP: log the response
     const results = response.data.results || [];
     
     if (results.length > 0) {
@@ -32,19 +36,30 @@ async function searchTMDB(query, expectedYear, mediaType = 'multi') {
       apiLogger.warn(`No TMDB results found`, { query, expectedYear });
     }
     
-    return results;
+    return {
+      url,
+      results,
+      rawResponse: response.data,
+      error: null
+    };
   } catch (err) {
+    console.error('TMDB Error:', err.response ? err.response.data : err.message); // TEMP: log the error
     apiLogger.error(`TMDB API request failed`, {
       query,
       error: err.message,
       status: err.response?.status,
       responseData: err.response?.data
     });
-    return [];
+    return {
+      url,
+      results: [],
+      rawResponse: err.response?.data || null,
+      error: err.message
+    };
   }
 }
 
-function scoreResults(results, query, expectedYear) {
+function scoreResults(results, query, expectedYear, expectedSeason, expectedEpisode) {
   apiLogger.debug(`Starting scoring process`, {
     query,
     expectedYear,
@@ -64,13 +79,23 @@ function scoreResults(results, query, expectedYear) {
       ? result.first_air_date.split('-')[0]
       : null;
 
-    if (!resultYear) {
-      apiLogger.debug(`Excluding result - missing year`, { resultTitle });
-      return null;
-    }
-
+    // For TV episodes, try to use season/episode info if available
+    let score;
+    if (result.season_number != null && result.episode_number != null && expectedSeason != null && expectedEpisode != null) {
+      score = computeEpisodeScore(
+        resultTitle,
+        resultYear,
+        query,
+        expectedYear,
+        result.season_number,
+        result.episode_number,
+        expectedSeason,
+        expectedEpisode
+      );
+    } else {
     // Use the new computeScore function here
-    const score = computeScore(resultTitle, resultYear, query, expectedYear);
+      score = computeScore(resultTitle, resultYear, query, expectedYear);
+    }
 
     apiLogger.debug(`Scored result`, {
       query,
@@ -155,8 +180,82 @@ function findBestMatch(scoredResults, query) {
   return null;
 }
 
+// New: Search for TV show by name, then fetch season/episode details if needed
+async function searchTVShowAndEpisode(showName, season, episode) {
+  // 1. Search for the TV show by name only
+  const url = `https://api.themoviedb.org/3/search/tv?api_key=${process.env.TMDB_API_KEY}&query=${encodeURIComponent(showName)}`;
+  apiLogger.info(`Searching TMDB for TV show`, { showName, url: url.replace(process.env.TMDB_API_KEY, '***') });
+  let showId = null;
+  let showResult = null;
+  try {
+    const response = await axios.get(url);
+    const results = response.data.results || [];
+    if (results.length > 0) {
+      showResult = results[0];
+      showId = showResult.id;
+      apiLogger.success(`Found TV show`, { showName, showId });
+    } else {
+      apiLogger.warn(`No TV show found for`, { showName });
+      return null;
+    }
+  } catch (err) {
+    apiLogger.error(`TMDB TV show search failed`, { showName, error: err.message });
+    return null;
+  }
+
+  // 2. If season and episode are provided, fetch episode details
+  if (showId && season && episode) {
+    const epUrl = `https://api.themoviedb.org/3/tv/${showId}/season/${season}/episode/${episode}?api_key=${process.env.TMDB_API_KEY}`;
+    try {
+      const epResponse = await axios.get(epUrl);
+      return {
+        show: showResult,
+        episode: epResponse.data
+      };
+    } catch (err) {
+      apiLogger.error(`TMDB episode fetch failed`, { showId, season, episode, error: err.message });
+      return { show: showResult, episode: null };
+    }
+  }
+  // If no season/episode, just return the show
+  return { show: showResult, episode: null };
+}
+
+// Normalize a TMDB result (tv or movie) to a common format
+function normalizeTMDBResult(result) {
+  if (result.media_type === 'tv' || result.first_air_date) {
+    return {
+      id: result.id,
+      type: 'tv',
+      title: result.name || result.original_name,
+      year: result.first_air_date ? result.first_air_date.split('-')[0] : '',
+      poster: result.poster_path,
+      overview: result.overview,
+      popularity: result.popularity,
+      vote_average: result.vote_average,
+      vote_count: result.vote_count,
+      origin_country: result.origin_country,
+    };
+  } else if (result.media_type === 'movie' || result.release_date) {
+    return {
+      id: result.id,
+      type: 'movie',
+      title: result.title || result.original_title,
+      year: result.release_date ? result.release_date.split('-')[0] : '',
+      poster: result.poster_path,
+      overview: result.overview,
+      popularity: result.popularity,
+      vote_average: result.vote_average,
+      vote_count: result.vote_count,
+    };
+  }
+  return null;
+}
+
 module.exports = {
   searchTMDB,
   scoreResults,
-  findBestMatch
+  findBestMatch,
+  searchTVShowAndEpisode,
+  normalizeTMDBResult // Export the new function
 };

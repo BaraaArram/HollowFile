@@ -2,63 +2,57 @@ const https = require('https');
 const path = require('path');
 const fs = require('fs');
 const { api: apiLogger, download: downloadLogger, result: resultLogger } = require('../logger.js');
-// Function to download the poster image and save it to both 'posters' and 'saved' directories
-async function downloadPosterImage(imagePath, posterPath) {
-  const downloadImage = (url, path) => {
-    const writer = fs.createWriteStream(path);
-    https.get(url, (response) => {
-      response.pipe(writer);
-    });
 
-    writer.on('finish', () => {
-    downloadLogger.info(`Poster image saved to ${path}`);
-    });
-
-    writer.on('error', (err) => {
-    downloadLogger.error(`Error saving poster image: ${err.message}`);
-    });
-  };
-
-  // Function to clean the filename (remove leading/trailing dots but keep extension dots)
+// Generalized function to download any image and save it to the specified directory/filename
+async function downloadImage(imageUrl, destPath) {
   const cleanFilename = (filepath) => {
     const dir = path.dirname(filepath);
     let filename = path.basename(filepath);
-    
     // Remove all leading dots
     filename = filename.replace(/^\.+/g, '');
-    
     // Ensure we don't end up with empty filename
     if (!filename) {
-      filename = 'poster' + path.extname(filepath);
+      filename = 'image' + path.extname(filepath);
     }
-    
     // Reconstruct path with cleaned filename
     return path.join(dir, filename);
   };
 
-  const cleanPath = cleanFilename(posterPath);
-
-  // Ensure directories exist before saving images
-  const postersDir = path.dirname(cleanPath);
+  const cleanPath = cleanFilename(destPath);
+  const dir = path.dirname(cleanPath);
   
-  if (!fs.existsSync(postersDir)) {
-    fs.mkdirSync(postersDir, { recursive: true });
-  downloadLogger.info(`Created directory: ${postersDir}`);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+    downloadLogger.info(`Created directory: ${dir}`);
   }
 
-  try {
-    // Download and save the poster image
-    await Promise.all([
-      new Promise((resolve, reject) => {
-        downloadImage(imagePath, cleanPath);
-        resolve();
-      })
-    ]);
-
-  downloadLogger.info(`Poster image successfully downloaded and saved at ${cleanPath}`);
-  } catch (err) {
-  downloadLogger.error(`Error during image download: ${err.message}`);
-  }
+  return new Promise((resolve, reject) => {
+    const file = fs.createWriteStream(cleanPath);
+    https.get(imageUrl, (response) => {
+      if (response.statusCode !== 200) {
+        file.close();
+        fs.unlink(cleanPath, () => {});
+        return reject(new Error(`Failed to get '${imageUrl}' (${response.statusCode})`));
+      }
+      response.pipe(file);
+      file.on('finish', () => {
+        file.close(() => {
+          downloadLogger.info(`Image saved to ${cleanPath}`);
+          resolve(cleanPath);
+        });
+      });
+      file.on('error', (err) => {
+        fs.unlink(cleanPath, () => {});
+        downloadLogger.error(`Error saving image: ${err.message}`);
+        reject(err);
+      });
+    }).on('error', (err) => {
+      file.close();
+      fs.unlink(cleanPath, () => {});
+      downloadLogger.error(`Error downloading image: ${err.message}`);
+      reject(err);
+    });
+  });
 }
 
-module.exports = downloadPosterImage;
+module.exports = { downloadImage };

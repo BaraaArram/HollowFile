@@ -56,4 +56,20 @@ function editDistance(s1, s2) {
   return costs[s2.length];
 }
 
-module.exports = { computeScore, getSimilarity };
+// Enhanced: Compute score for TV episodes, using season/episode if provided
+function computeEpisodeScore(resultTitle, resultYear, queryTitle, expectedYear, resultSeason, resultEpisode, expectedSeason, expectedEpisode) {
+  const titleSimilarity = getSimilarity(resultTitle, queryTitle);
+  const yearDiff = Math.abs(parseInt(resultYear) - parseInt(expectedYear));
+  let score = titleSimilarity * (1 - (yearDiff * 0.1));
+  if (
+    resultSeason != null && resultEpisode != null &&
+    expectedSeason != null && expectedEpisode != null &&
+    parseInt(resultSeason) === parseInt(expectedSeason) &&
+    parseInt(resultEpisode) === parseInt(expectedEpisode)
+  ) {
+    score += 0.2; // Bonus for exact episode match
+  }
+  return Math.min(score, 1.0);
+}
+
+module.exports = { computeScore, getSimilarity, computeEpisodeScore };
