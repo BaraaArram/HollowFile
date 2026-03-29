@@ -7,6 +7,9 @@ contextBridge.exposeInMainWorld('api', {
   selectDirectory: () => ipcRenderer.invoke('select-directory'),
   scanDirectory: (dirPath) => ipcRenderer.invoke('scan-directory', dirPath),
   getSavedDir: () => ipcRenderer.invoke('get-saved-dir'),
+  getLibraryContext: () => ipcRenderer.invoke('get-library-context'),
+  setActiveLibrary: (libraryId) => ipcRenderer.invoke('set-active-library', libraryId),
+  removeLibrary: (libraryId) => ipcRenderer.invoke('remove-library', libraryId),
   scanDirectoryStream: (dirPath, onProgress, onComplete, options = {}) => {
     console.log('[Preload] scanDirectoryStream called with:', { dirPath, options });
 
@@ -67,6 +70,12 @@ contextBridge.exposeInMainWorld('api', {
   getNetworkStatus: () => ipcRenderer.invoke('get-network-status'),
   getSettings: () => ipcRenderer.invoke('get-settings'),
   saveSettings: (settings) => ipcRenderer.invoke('save-settings', settings),
+  refreshAllMetadata: () => ipcRenderer.invoke('refresh-all-metadata'),
+  onRefreshProgress: (callback) => {
+    const handler = (_, data) => callback(data);
+    ipcRenderer.on('refresh-progress', handler);
+    return () => ipcRenderer.removeListener('refresh-progress', handler);
+  },
   onScanProgress: (callback) => {
     console.log('[Preload] onScanProgress called, setting up listener');
     const handler = (_, data) => {
@@ -87,6 +96,11 @@ contextBridge.exposeInMainWorld('api', {
     };
     ipcRenderer.on('scan-complete', handler);
     return () => ipcRenderer.removeListener('scan-complete', handler);
+  },
+  onLibraryContextChanged: (callback) => {
+    const handler = (_, data) => callback(data);
+    ipcRenderer.on('library-context-changed', handler);
+    return () => ipcRenderer.removeListener('library-context-changed', handler);
   }
 });
 

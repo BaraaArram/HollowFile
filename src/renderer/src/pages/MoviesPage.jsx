@@ -1,12 +1,14 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import MovieCard from '../components/MovieCard';
 import { useNavigate } from 'react-router-dom';
+import { useI18n } from '../contexts/i18nState';
+import { getCollectionName, getGenres, getMediaTitle } from '../utils/mediaLocalization';
 
-function groupByCollection(movies) {
+function groupByCollection(movies, locale) {
   const collections = {};
   const standalone = [];
   for (const movie of movies) {
-    const collection = movie.fullApiData?.movie?.belongs_to_collection?.name;
+    const collection = getCollectionName(movie, locale);
     if (collection) {
       if (!collections[collection]) collections[collection] = [];
       collections[collection].push(movie);
@@ -17,16 +19,16 @@ function groupByCollection(movies) {
   return { collections, standalone };
 }
 
-function filterMovies(movies, search, genreFilter) {
+function filterMovies(movies, search, genreFilter, locale) {
   let filtered = movies;
 
   // Apply search filter
   if (search) {
     const s = search.toLowerCase();
     filtered = filtered.filter(file => {
-      const title = (file.final?.title || file.parsing?.cleanTitle || file.filename || '').toLowerCase();
+      const title = getMediaTitle(file, locale).toLowerCase();
       const year = (file.final?.year || file.parsing?.year || '').toString();
-      const collection = (file.fullApiData?.movie?.belongs_to_collection?.name || '').toLowerCase();
+      const collection = (getCollectionName(file, locale) || '').toLowerCase();
       return title.includes(s) || year.includes(s) || collection.includes(s);
     });
   }
@@ -34,7 +36,7 @@ function filterMovies(movies, search, genreFilter) {
   // Apply genre filter
   if (genreFilter) {
     filtered = filtered.filter(file => {
-      const genres = file.fullApiData?.movie?.genres || [];
+      const genres = getGenres(file, locale);
       return genres.some(genre => genre.name === genreFilter);
     });
   }
@@ -43,6 +45,7 @@ function filterMovies(movies, search, genreFilter) {
 }
 
 export default function MoviesPage() {
+  const { t, formatNumber, locale } = useI18n();
   const [currentDir, setCurrentDir] = useState(null);
   const [status, setStatus] = useState('');
   const [scanDisabled, setScanDisabled] = useState(true);
@@ -58,20 +61,14 @@ export default function MoviesPage() {
   const scanInProgress = useRef(false);
   const navigate = useNavigate();
 
-  useEffect(() => {
-    const handler = setTimeout(() => setDebouncedSearch(search), 300);
-    return () => clearTimeout(handler);
-  }, [search]);
-
-  useEffect(() => {
+  const reloadLibraryState = useCallback(() => {
     if (window.api && window.api.getSavedDir) {
       window.api.getSavedDir().then((dir) => {
         setCurrentDir(dir);
         setScanDisabled(!dir);
-        setStatus(dir ? `Directory: ${dir}` : 'No directory selected');
+        setStatus(dir ? t('moviesPage.directory', { dir }) : t('moviesPage.noDirectory'));
       });
     }
-    // Load last scan results
     if (window.api && window.api.getLastScanResults) {
       window.api.getLastScanResults().then((results) => {
         if (Array.isArray(results)) {
@@ -79,7 +76,16 @@ export default function MoviesPage() {
         }
       });
     }
-  }, []);
+  }, [t]);
+
+  useEffect(() => {
+    const handler = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(handler);
+  }, [search]);
+
+  useEffect(() => {
+    reloadLibraryState();
+  }, [reloadLibraryState]);
 
   // Refresh when scan runs from other pages
   useEffect(() => {
@@ -113,6 +119,12 @@ export default function MoviesPage() {
     return () => window.removeEventListener('media-data-changed', handler);
   }, []);
 
+  useEffect(() => {
+    const handler = () => reloadLibraryState();
+    window.addEventListener('library-context-changed', handler);
+    return () => window.removeEventListener('library-context-changed', handler);
+  }, [reloadLibraryState]);
+
   // Check for genre filter from navigation state
   useEffect(() => {
     const state = window.history?.state?.usr;
@@ -123,7 +135,7 @@ export default function MoviesPage() {
 
   const handleScan = () => {
     if (!currentDir || scanInProgress.current) return;
-    setStatus(`Scanning: ${currentDir}`);
+    setStatus(t('moviesPage.scanningDir', { dir: currentDir }));
     scanInProgress.current = true;
     
     // Load and display existing results immediately before starting scan
@@ -160,14 +172,14 @@ export default function MoviesPage() {
   };
 
   // Filter and sort movies
-  const filteredMovies = filterMovies(movies, debouncedSearch, genreFilter);
+  const filteredMovies = filterMovies(movies, debouncedSearch, genreFilter, locale);
   const sortedMovies = [...filteredMovies].sort((a, b) => {
     let comparison = 0;
     switch (sortBy) {
       case 'title': {
-        const titleA = (a.final?.title || a.parsing?.cleanTitle || a.filename || '').toLowerCase();
-        const titleB = (b.final?.title || b.parsing?.cleanTitle || b.filename || '').toLowerCase();
-        comparison = titleA.localeCompare(titleB);
+        const titleA = getMediaTitle(a, locale).toLowerCase();
+        const titleB = getMediaTitle(b, locale).toLowerCase();
+        comparison = titleA.localeCompare(titleB, locale);
         break;
       }
       case 'year': {
@@ -194,7 +206,7 @@ export default function MoviesPage() {
     return sortOrder === 'asc' ? comparison : -comparison;
   });
 
-  const { collections, standalone } = bundleCollections ? groupByCollection(sortedMovies) : { collections: {}, standalone: sortedMovies };
+  const { collections, standalone } = bundleCollections ? groupByCollection(sortedMovies, locale) : { collections: {}, standalone: sortedMovies };
   const hasResults = Object.keys(collections).length > 0 || standalone.length > 0;
 
   return (
@@ -202,9 +214,9 @@ export default function MoviesPage() {
       {/* Hero Section */}
       <div className="page-hero">
         <div className="hero-content">
-          <h1 className="page-title">Movies</h1>
+          <h1 className="page-title">{t('moviesPage.title')}</h1>
           <p className="page-subtitle">
-            {sortedMovies.length} movie{sortedMovies.length !== 1 ? 's' : ''} in your library
+            {t('moviesPage.libraryCount', { count: formatNumber(sortedMovies.length) })}
           </p>
         </div>
         <div className="hero-actions">
@@ -215,7 +227,7 @@ export default function MoviesPage() {
             disabled={scanDisabled}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M23 4v6h-6M1 20v-6h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-            Rescan
+            {t('moviesPage.rescan')}
           </button>
         </div>
       </div>
@@ -228,16 +240,16 @@ export default function MoviesPage() {
             type="text"
             value={search}
             onChange={e => setSearch(e.target.value)}
-            placeholder="Search by title, year, or collection..."
+            placeholder={t('moviesPage.searchPlaceholder')}
             className="search-input"
           />
           {genreFilter && (
             <div className="genre-filter-badge">
-              <span>Genre: {genreFilter}</span>
+              <span>{t('moviesPage.genrePrefix', { genre: genreFilter })}</span>
               <button
                 onClick={() => setGenreFilter('')}
                 className="clear-filter"
-                title="Clear genre filter"
+                title={t('moviesPage.clearGenreFilter')}
               >
                 ×
               </button>
@@ -251,10 +263,10 @@ export default function MoviesPage() {
             onChange={e => setSortBy(e.target.value)}
             className="sort-select"
           >
-            <option value="title">Sort by Title</option>
-            <option value="year">Sort by Year</option>
-            <option value="rating">Sort by Rating</option>
-            <option value="popularity">Sort by Popularity</option>
+            <option value="title">{t('moviesPage.sortTitle')}</option>
+            <option value="year">{t('moviesPage.sortYear')}</option>
+            <option value="rating">{t('moviesPage.sortRating')}</option>
+            <option value="popularity">{t('moviesPage.sortPopularity')}</option>
           </select>
           
           <button
@@ -269,13 +281,13 @@ export default function MoviesPage() {
               onClick={() => setViewMode('grid')}
               className={`toggle-button ${viewMode === 'grid' ? 'active' : ''}`}
             >
-              Grid
+              {t('moviesPage.grid')}
             </button>
             <button
               onClick={() => setViewMode('list')}
               className={`toggle-button ${viewMode === 'list' ? 'active' : ''}`}
             >
-              List
+              {t('moviesPage.list')}
             </button>
         </div>
         
@@ -284,19 +296,19 @@ export default function MoviesPage() {
             onClick={() => setGridDensity('normal')}
             className={`density-button ${gridDensity === 'normal' ? 'active' : ''}`}
           >
-            Normal
+            {t('moviesPage.normal')}
           </button>
           <button
             onClick={() => setGridDensity('dense')}
             className={`density-button ${gridDensity === 'dense' ? 'active' : ''}`}
           >
-            Dense
+            {t('moviesPage.dense')}
           </button>
           <button
             onClick={() => setGridDensity('compact')}
             className={`density-button ${gridDensity === 'compact' ? 'active' : ''}`}
           >
-            Compact
+            {t('moviesPage.compact')}
           </button>
         </div>
       </div>
@@ -312,11 +324,11 @@ export default function MoviesPage() {
             className="toggle-checkbox"
           />
           <span className="toggle-slider"></span>
-          Group movies into collections
+          {t('moviesPage.groupCollections')}
         </label>
         {bundleCollections && Object.keys(collections).length > 0 && (
           <span className="collection-count">
-            ({Object.keys(collections).length} collections)
+            ({t('moviesPage.collectionsCount', { count: formatNumber(Object.keys(collections).length) })})
           </span>
         )}
       </div>
@@ -329,7 +341,7 @@ export default function MoviesPage() {
               <div className="collection-header">
                 <h2 className="collection-title">{name}</h2>
                 <span className="collection-badge">
-                  {group.length} movie{group.length !== 1 ? 's' : ''}
+                  {t('moviesPage.moviesCount', { count: formatNumber(group.length) })}
                 </span>
               </div>
               <div className={`movie-grid ${viewMode} ${gridDensity}`}>
@@ -351,7 +363,7 @@ export default function MoviesPage() {
       <div className={`movie-grid ${viewMode} ${gridDensity}`}>
         {!hasResults && (
           <div className="empty-state">
-            {search ? 'No movies found matching your search.' : 'No movies found.'}
+            {search ? t('moviesPage.emptySearch') : t('moviesPage.empty')}
           </div>
         )}
         {standalone.map((file, idx) => (

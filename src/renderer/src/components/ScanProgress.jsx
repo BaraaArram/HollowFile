@@ -1,20 +1,5 @@
 import React from 'react';
-
-const STAGE_LABELS = {
-  'initializing': 'Initializing',
-  'parsing': 'Parsing',
-  'fetching-tmdb': 'Fetching Data',
-  'downloading-poster': 'Downloading Poster',
-  'downloading-backdrop': 'Downloading Backdrop',
-  'downloading-cast-image': 'Downloading Cast',
-  'downloading-crew-image': 'Downloading Crew',
-  'saving-result': 'Saving',
-  'already-exists': 'Skipped',
-  'done': 'Complete',
-  'error': 'Error',
-  'scan-complete': 'Scan Complete',
-  'downloading-trailer': 'Downloading Trailer',
-};
+import { useI18n } from '../contexts/i18nState';
 
 const STAGE_ICONS = {
   'initializing': '◎',
@@ -30,6 +15,7 @@ const STAGE_ICONS = {
 };
 
 export default function ScanProgress({ scanStatus, trailerProgress }) {
+  const { t, formatNumber, translateStage } = useI18n();
   const showScan = scanStatus && !['scan-complete'].includes(scanStatus.status);
   const showTrailer = trailerProgress && trailerProgress.batch;
 
@@ -51,11 +37,11 @@ export default function ScanProgress({ scanStatus, trailerProgress }) {
           <div className="gsb-row">
             <div className="gsb-badge gsb-badge-scan">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M23 4v6h-6M1 20v-6h6" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-              Scanning
+              {t('scanProgress.scanning')}
             </div>
             <div className="gsb-stage">
               <span className="gsb-stage-icon">{STAGE_ICONS[scanStatus.status] || '●'}</span>
-              {STAGE_LABELS[scanStatus.status] || scanStatus.status}
+              {translateStage(scanStatus.status)}
             </div>
             {scanStatus.filename && (
               <div className="gsb-filename" title={scanStatus.filename}>{scanStatus.filename}</div>
@@ -66,9 +52,9 @@ export default function ScanProgress({ scanStatus, trailerProgress }) {
             <div className="gsb-spacer" />
             {scanStatus.totalFiles > 0 && (
               <div className="gsb-counter">
-                <span className="gsb-counter-current">{scanStatus.currentFileIndex}</span>
+                <span className="gsb-counter-current">{formatNumber(scanStatus.currentFileIndex)}</span>
                 <span className="gsb-counter-sep">/</span>
-                <span className="gsb-counter-total">{scanStatus.totalFiles}</span>
+                <span className="gsb-counter-total">{formatNumber(scanStatus.totalFiles)}</span>
               </div>
             )}
             {scanStatus.totalFiles > 0 && (
@@ -95,16 +81,16 @@ export default function ScanProgress({ scanStatus, trailerProgress }) {
           <div className="gsb-row">
             <div className="gsb-badge gsb-badge-trailer">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><polygon points="5 3 19 12 5 21 5 3" stroke="currentColor" strokeWidth="2.5" strokeLinejoin="round"/></svg>
-              Trailers
+              {t('scanProgress.trailers')}
             </div>
             <div className="gsb-stage">
-              Downloading: {trailerProgress.title || trailerProgress.videoKey}
+              {t('scanProgress.downloadingLabel', { title: trailerProgress.title || trailerProgress.videoKey })}
             </div>
             <div className="gsb-spacer" />
             <div className="gsb-counter">
-              <span className="gsb-counter-current">{trailerProgress.current}</span>
+              <span className="gsb-counter-current">{formatNumber(trailerProgress.current)}</span>
               <span className="gsb-counter-sep">/</span>
-              <span className="gsb-counter-total">{trailerProgress.total}</span>
+              <span className="gsb-counter-total">{formatNumber(trailerProgress.total)}</span>
             </div>
             <div className="gsb-pct">{trailerProgress.percent || 0}%</div>
           </div>

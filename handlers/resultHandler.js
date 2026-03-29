@@ -10,6 +10,104 @@ function sanitizeForFilename(name) {
   return (name || 'Unknown').replace(/[\\/:*?"<>|]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
 }
 
+function isNonEmptyString(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function getLocalizedEntryFieldFlags(localizedEntry) {
+  return {
+    title: isNonEmptyString(localizedEntry?.movie?.title)
+      || isNonEmptyString(localizedEntry?.show?.name)
+      || isNonEmptyString(localizedEntry?.episode?.name),
+    overview: isNonEmptyString(localizedEntry?.movie?.overview)
+      || isNonEmptyString(localizedEntry?.show?.overview)
+      || isNonEmptyString(localizedEntry?.episode?.overview),
+  };
+}
+
+function buildLocalizedStatus(fullApiData, localizedApiData) {
+  const statusByLocale = {};
+  const checks = fullApiData?.localizationChecks || {};
+
+  Object.entries(checks).forEach(([localeCode, resourceChecks]) => {
+    const resources = {
+      movie: resourceChecks?.movie || { checked: false, found: false },
+      show: resourceChecks?.show || { checked: false, found: false },
+      episode: resourceChecks?.episode || { checked: false, found: false },
+    };
+
+    const checked = Object.values(resources).some((resource) => resource?.checked);
+    const found = Object.values(resources).some((resource) => resource?.found);
+    const titleFound = Object.values(resources).some((resource) => resource?.fields?.title);
+    const overviewFound = Object.values(resources).some((resource) => resource?.fields?.overview);
+    const checkedAt = Object.values(resources)
+      .map((resource) => resource?.checkedAt)
+      .find(Boolean) || new Date().toISOString();
+
+    statusByLocale[localeCode] = {
+      checked,
+      found,
+      titleFound,
+      overviewFound,
+      checkedAt,
+      resources,
+    };
+  });
+
+  // Backward compatibility: old results may have localized payloads without status metadata.
+  Object.entries(localizedApiData || {}).forEach(([localeCode, localizedEntry]) => {
+    if (!statusByLocale[localeCode]) {
+      const fieldFlags = getLocalizedEntryFieldFlags(localizedEntry);
+      statusByLocale[localeCode] = {
+        checked: true,
+        found: fieldFlags.title || fieldFlags.overview,
+        titleFound: fieldFlags.title,
+        overviewFound: fieldFlags.overview,
+        checkedAt: new Date().toISOString(),
+        resources: {
+          movie: { checked: !!localizedEntry?.movie, found: !!localizedEntry?.movie, fields: { title: isNonEmptyString(localizedEntry?.movie?.title), overview: isNonEmptyString(localizedEntry?.movie?.overview) } },
+          show: { checked: !!localizedEntry?.show, found: !!localizedEntry?.show, fields: { title: isNonEmptyString(localizedEntry?.show?.name), overview: isNonEmptyString(localizedEntry?.show?.overview) } },
+          episode: { checked: !!localizedEntry?.episode, found: !!localizedEntry?.episode, fields: { title: isNonEmptyString(localizedEntry?.episode?.name), overview: isNonEmptyString(localizedEntry?.episode?.overview) } },
+        },
+      };
+      return;
+    }
+
+    const current = statusByLocale[localeCode];
+    const fieldFlags = getLocalizedEntryFieldFlags(localizedEntry);
+    current.found = current.found || !!localizedEntry?.movie || !!localizedEntry?.show || !!localizedEntry?.episode;
+    current.titleFound = current.titleFound || fieldFlags.title;
+    current.overviewFound = current.overviewFound || fieldFlags.overview;
+    current.resources.movie.found = current.resources.movie.found || !!localizedEntry?.movie;
+    current.resources.show.found = current.resources.show.found || !!localizedEntry?.show;
+    current.resources.episode.found = current.resources.episode.found || !!localizedEntry?.episode;
+  });
+
+  // Default language is always available from the base TMDB payload.
+  statusByLocale.en = {
+    checked: true,
+    found: isNonEmptyString(fullApiData?.movie?.title)
+      || isNonEmptyString(fullApiData?.show?.name)
+      || isNonEmptyString(fullApiData?.episode?.name)
+      || isNonEmptyString(fullApiData?.movie?.overview)
+      || isNonEmptyString(fullApiData?.show?.overview),
+    titleFound: isNonEmptyString(fullApiData?.movie?.title)
+      || isNonEmptyString(fullApiData?.show?.name)
+      || isNonEmptyString(fullApiData?.episode?.name),
+    overviewFound: isNonEmptyString(fullApiData?.movie?.overview)
+      || isNonEmptyString(fullApiData?.show?.overview)
+      || isNonEmptyString(fullApiData?.episode?.overview),
+    checkedAt: new Date().toISOString(),
+    resources: {
+      movie: { checked: !!fullApiData?.movie, found: !!fullApiData?.movie, fields: { title: isNonEmptyString(fullApiData?.movie?.title), overview: isNonEmptyString(fullApiData?.movie?.overview) } },
+      show: { checked: !!fullApiData?.show, found: !!fullApiData?.show, fields: { title: isNonEmptyString(fullApiData?.show?.name), overview: isNonEmptyString(fullApiData?.show?.overview) } },
+      episode: { checked: !!fullApiData?.episode, found: !!fullApiData?.episode, fields: { title: isNonEmptyString(fullApiData?.episode?.name), overview: isNonEmptyString(fullApiData?.episode?.overview) } },
+    },
+  };
+
+  return statusByLocale;
+}
+
 async function downloadImage(url, localPath, timeout = 30000) {
   // Avoid re-downloading when the file already exists.
   try {
@@ -251,6 +349,24 @@ async function handleMatchedResult(originalName, result, resultYear, dirPath, is
     backdrop_path: localBackdropPath
   };
 
+  const localizedApiData = fullApiData?.localized
+    ? Object.entries(fullApiData.localized).reduce((accumulator, [localeCode, localizedEntry]) => {
+        const movie = localizedEntry?.movie || null;
+        const show = localizedEntry?.show || null;
+        const episode = localizedEntry?.episode || null;
+
+        if (movie || show || episode) {
+          accumulator[localeCode] = { movie, show, episode };
+        }
+
+        return accumulator;
+      }, {})
+    : null;
+
+  const localizationStatus = fullApiData
+    ? buildLocalizedStatus(fullApiData, localizedApiData)
+    : null;
+
   const resultData = {
     original_name: originalName,
     title: result.title || result.name,
@@ -261,9 +377,11 @@ async function handleMatchedResult(originalName, result, resultYear, dirPath, is
     backdrop_path: localBackdropPath,
     final: finalWithPosterPath,
     fullApiData: fullApiData ? { 
-      movie: fullApiData.movie ? { id: fullApiData.movie.id, title: fullApiData.movie.title, release_date: fullApiData.movie.release_date } : null,
-      show: fullApiData.show ? { id: fullApiData.show.id, name: fullApiData.show.name, first_air_date: fullApiData.show.first_air_date } : null,
-      episode: fullApiData.episode ? { id: fullApiData.episode.id, season_number: fullApiData.episode.season_number, episode_number: fullApiData.episode.episode_number } : null,
+      movie: fullApiData.movie || null,
+      show: fullApiData.show || null,
+      episode: fullApiData.episode || null,
+      localized: localizedApiData,
+      localizationStatus,
       credits: fullApiData.credits ? { cast: fullApiData.credits.cast?.slice(0, 20), crew: fullApiData.credits.crew?.slice(0, 20) } : null,
       videos: fullApiData.videos || []
     } : null,

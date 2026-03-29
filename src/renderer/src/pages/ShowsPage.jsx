@@ -1,6 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import ShowCard from '../components/ShowCard';
 import EpisodeCard from '../components/EpisodeCard';
+import { useI18n } from '../contexts/i18nState';
+import { getMediaTitle } from '../utils/mediaLocalization';
 
 function groupBySeason(episodes) {
   const seasons = {};
@@ -23,6 +25,7 @@ function filterShows(shows, search) {
 }
 
 export default function ShowsPage() {
+  const { t, formatNumber, locale } = useI18n();
   const [shows, setShows] = useState([]);
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
@@ -34,14 +37,14 @@ export default function ShowsPage() {
     return () => clearTimeout(handler);
   }, [search]);
 
-  const loadShows = () => {
+  const loadShows = useCallback(() => {
     if (window.api && window.api.getLastScanResults) {
       window.api.getLastScanResults().then((results) => {
         if (Array.isArray(results)) {
           const tvs = results.filter(f => f.final?.type === 'tv');
           const grouped = {};
           for (const ep of tvs) {
-            const title = ep.final?.title || ep.parsing?.cleanTitle || ep.filename;
+            const title = getMediaTitle(ep, locale);
             if (!grouped[title]) grouped[title] = [];
             grouped[title].push(ep);
           }
@@ -49,11 +52,11 @@ export default function ShowsPage() {
         }
       });
     }
-  };
+  }, [locale]);
 
   useEffect(() => {
     loadShows();
-  }, []);
+  }, [loadShows]);
 
   // Refresh when scan makes progress from any page
   useEffect(() => {
@@ -64,14 +67,20 @@ export default function ShowsPage() {
       }
     });
     return unsub;
-  }, []);
+  }, [loadShows]);
 
   // Reload when images are changed via ImageBrowserModal
   useEffect(() => {
     const handler = () => loadShows();
     window.addEventListener('media-data-changed', handler);
     return () => window.removeEventListener('media-data-changed', handler);
-  }, []);
+  }, [loadShows]);
+
+  useEffect(() => {
+    const handler = () => loadShows();
+    window.addEventListener('library-context-changed', handler);
+    return () => window.removeEventListener('library-context-changed', handler);
+  }, [loadShows]);
 
   const filteredShows = filterShows(shows, debouncedSearch);
   const sortedShows = [...filteredShows].sort((a, b) => {
@@ -81,7 +90,7 @@ export default function ShowsPage() {
     const seasonsB = groupBySeason(episodesB);
     let comparison = 0;
     switch (sortBy) {
-      case 'title': comparison = titleA.localeCompare(titleB); break;
+      case 'title': comparison = titleA.localeCompare(titleB, locale); break;
       case 'year': {
         const yearA = episodesA[0]?.final?.year || episodesA[0]?.parsing?.year || '0';
         const yearB = episodesB[0]?.final?.year || episodesB[0]?.parsing?.year || '0';
@@ -89,7 +98,7 @@ export default function ShowsPage() {
       }
       case 'episodes': comparison = episodesA.length - episodesB.length; break;
       case 'seasons': comparison = Object.keys(seasonsA).length - Object.keys(seasonsB).length; break;
-      default: comparison = titleA.localeCompare(titleB);
+      default: comparison = titleA.localeCompare(titleB, locale);
     }
     return sortOrder === 'asc' ? comparison : -comparison;
   });
@@ -102,9 +111,9 @@ export default function ShowsPage() {
       <section className="sp-hero">
         <div className="sp-hero-glow" />
         <div className="sp-hero-content">
-          <h1 className="sp-title">TV Shows</h1>
+          <h1 className="sp-title">{t('showsPage.title')}</h1>
           <p className="sp-subtitle">
-            {sortedShows.length} show{sortedShows.length !== 1 ? 's' : ''} &bull; {totalEpisodes} episode{totalEpisodes !== 1 ? 's' : ''}
+            {t('showsPage.summary', { shows: formatNumber(sortedShows.length), episodes: formatNumber(totalEpisodes) })}
           </p>
         </div>
       </section>
@@ -117,16 +126,16 @@ export default function ShowsPage() {
             type="text"
             value={search}
             onChange={e => setSearch(e.target.value)}
-            placeholder="Search shows..."
+            placeholder={t('showsPage.searchPlaceholder')}
             className="sp-search"
           />
         </div>
         <div className="sp-controls">
           <select value={sortBy} onChange={e => setSortBy(e.target.value)} className="sp-select">
-            <option value="title">Title</option>
-            <option value="year">Year</option>
-            <option value="episodes">Episodes</option>
-            <option value="seasons">Seasons</option>
+            <option value="title">{t('showsPage.sortTitle')}</option>
+            <option value="year">{t('showsPage.sortYear')}</option>
+            <option value="episodes">{t('showsPage.sortEpisodes')}</option>
+            <option value="seasons">{t('showsPage.sortSeasons')}</option>
           </select>
           <button className="sp-sort-btn" onClick={() => setSortOrder(o => o === 'asc' ? 'desc' : 'asc')}>
             {sortOrder === 'asc' ? '↑' : '↓'}
@@ -138,7 +147,7 @@ export default function ShowsPage() {
       <div className="sp-grid">
         {sortedShows.length === 0 && (
           <div className="sp-empty">
-            {search ? 'No shows found matching your search.' : 'No TV shows found.'}
+            {search ? t('showsPage.emptySearch') : t('showsPage.empty')}
           </div>
         )}
         {sortedShows.map(([title, episodes], idx) => {
@@ -147,14 +156,14 @@ export default function ShowsPage() {
           const showId = episodes[0].final?.id || episodes[0].fullApiData?.show?.id || title;
           const seasons = groupBySeason(episodes);
           return (
-            <ShowCard key={title + idx} title={title} poster={showPoster} year={year} seasons={seasons} showId={showId}>
+            <ShowCard key={title + idx} title={title} poster={showPoster} year={year} seasons={seasons} showId={showId} localeStatusItem={episodes[0]}>
               {Object.entries(seasons)
                 .sort(([a], [b]) => parseInt(a) - parseInt(b))
                 .map(([season, eps]) => (
                   <div key={season} className="sp-season">
                     <div className="sp-season-header">
-                      <span>Season {season}</span>
-                      <span className="sp-season-badge">{eps.length} ep{eps.length !== 1 ? 's' : ''}</span>
+                      <span>{t('showsPage.season', { season: formatNumber(season) })}</span>
+                      <span className="sp-season-badge">{t('showsPage.episodesCount', { count: formatNumber(eps.length) })}</span>
                     </div>
                     <div className="sp-episodes">
                       {eps

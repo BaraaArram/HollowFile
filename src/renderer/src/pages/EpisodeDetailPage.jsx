@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import LazyImage from '../components/LazyImage';
+import { useI18n } from '../contexts/i18nState';
+import { getEpisodeOverview, getEpisodeTitle, getLocalizedRecords, getMediaOverview, getMediaTitle } from '../utils/mediaLocalization';
 
 function RatingRing({ rating, size = 56 }) {
   const r = (size - 8) / 2;
@@ -23,8 +25,8 @@ function RatingRing({ rating, size = 56 }) {
 export default function EpisodeDetailPage() {
   const { showId, season, episode } = useParams();
   const navigate = useNavigate();
+  const { t, locale, formatDate, formatNumber, formatRuntime, formatSeasonEpisode, translateStatus } = useI18n();
   const [episodeData, setEpisodeData] = useState(null);
-  const [showData, setShowData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('overview');
   const [castPeople, setCastPeople] = useState([]);
@@ -41,25 +43,32 @@ export default function EpisodeDetailPage() {
           });
           if (ep) {
             setEpisodeData(ep);
-            setShowData({
-              title: ep.final?.title || ep.parsing?.cleanTitle,
-              poster: ep.final?.poster || ep.final?.poster_path,
-              year: ep.final?.year || ep.parsing?.year,
-              overview: ep.fullApiData?.show?.overview,
-              vote_average: ep.fullApiData?.show?.vote_average,
-              vote_count: ep.fullApiData?.show?.vote_count,
-              popularity: ep.fullApiData?.show?.popularity,
-              status: ep.fullApiData?.show?.status,
-              original_language: ep.fullApiData?.show?.original_language,
-              origin_country: ep.fullApiData?.show?.origin_country,
-              backdrop: ep.fullApiData?.show?.backdrop_path
-            });
           }
         }
         setLoading(false);
       });
     }
   }, [showId, season, episode]);
+
+  useEffect(() => {
+    const handler = () => {
+      if (window.api && window.api.getLastScanResults) {
+        window.api.getLastScanResults().then((results) => {
+          if (Array.isArray(results)) {
+            const ep = results.find(f => {
+              const epSeason = f.parsing?.season || f.fullApiData?.episode?.season_number;
+              const epNumber = f.parsing?.episode || f.fullApiData?.episode?.episode_number;
+              return f.final?.type === 'tv' && epSeason?.toString() === season && epNumber?.toString() === episode;
+            });
+            setEpisodeData(ep || null);
+          }
+        });
+      }
+    };
+
+    window.addEventListener('library-context-changed', handler);
+    return () => window.removeEventListener('library-context-changed', handler);
+  }, [season, episode]);
 
   useEffect(() => {
     if (!episodeData || !window.api || !window.api.readPersonData) return;
@@ -82,13 +91,29 @@ export default function EpisodeDetailPage() {
   }, [episodeData]);
 
   if (loading) {
-    return <div className="dp-loading"><div className="dp-loading-spinner" /><span>Loading episode details...</span></div>;
+    return <div className="dp-loading"><div className="dp-loading-spinner" /><span>{t('episodeDetailPage.loading')}</span></div>;
   }
   if (!episodeData) {
-    return <div className="dp-loading"><span>Episode not found</span></div>;
+    return <div className="dp-loading"><span>{t('episodeDetailPage.notFound')}</span></div>;
   }
 
-  const epInfo = episodeData.fullApiData?.episode || {};
+  const { show: localizedShow, episode: localizedEpisode } = getLocalizedRecords(episodeData, locale);
+  const showData = {
+    title: getMediaTitle(episodeData, locale),
+    poster: episodeData.final?.poster || episodeData.final?.poster_path,
+    year: episodeData.final?.year || localizedShow?.first_air_date?.slice(0, 4) || episodeData.parsing?.year,
+    overview: getMediaOverview(episodeData, locale),
+    vote_average: localizedShow?.vote_average || episodeData.fullApiData?.show?.vote_average,
+    vote_count: localizedShow?.vote_count || episodeData.fullApiData?.show?.vote_count,
+    popularity: localizedShow?.popularity || episodeData.fullApiData?.show?.popularity,
+    status: localizedShow?.status || episodeData.fullApiData?.show?.status,
+    original_language: localizedShow?.original_language || episodeData.fullApiData?.show?.original_language,
+    origin_country: localizedShow?.origin_country || episodeData.fullApiData?.show?.origin_country,
+    backdrop: localizedShow?.backdrop_path || episodeData.fullApiData?.show?.backdrop_path
+  };
+  const epInfo = localizedEpisode || episodeData.fullApiData?.episode || {};
+  const episodeTitle = getEpisodeTitle(episodeData, locale);
+  const episodeOverview = getEpisodeOverview(episodeData, locale);
   const cast = castPeople;
   const crew = crewPeople;
 
@@ -99,14 +124,11 @@ export default function EpisodeDetailPage() {
     return n.match(/^[a-z]:/i) ? `file:///${n}` : `file://${n}`;
   };
 
-  const formatRuntime = (m) => { if (!m) return ''; const h = Math.floor(m / 60); const mins = m % 60; return h > 0 ? `${h}h ${mins}m` : `${mins}m`; };
-  const formatDate = (d) => { if (!d) return ''; return new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }); };
-
   const tabs = [
-    { key: 'overview', label: 'Overview', icon: <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 4h12M2 8h12M2 12h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg> },
-    { key: 'cast', label: `Cast (${cast.length})`, icon: <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="5" r="3" stroke="currentColor" strokeWidth="1.5"/><path d="M2.5 14c0-2.5 2-4.5 5.5-4.5s5.5 2 5.5 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg> },
-    { key: 'crew', label: `Crew (${crew.length})`, icon: <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="6" cy="5" r="2.5" stroke="currentColor" strokeWidth="1.5"/><circle cx="11" cy="6" r="2" stroke="currentColor" strokeWidth="1.5"/><path d="M1 13c0-2 1.5-3.5 5-3.5s5 1.5 5 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg> },
-    { key: 'details', label: 'Details', icon: <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.5"/><path d="M8 5v3l2 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg> },
+    { key: 'overview', label: t('episodeDetailPage.tabs.overview'), icon: <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 4h12M2 8h12M2 12h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg> },
+    { key: 'cast', label: t('episodeDetailPage.tabs.cast', { count: formatNumber(cast.length) }), icon: <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="5" r="3" stroke="currentColor" strokeWidth="1.5"/><path d="M2.5 14c0-2.5 2-4.5 5.5-4.5s5.5 2 5.5 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg> },
+    { key: 'crew', label: t('episodeDetailPage.tabs.crew', { count: formatNumber(crew.length) }), icon: <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="6" cy="5" r="2.5" stroke="currentColor" strokeWidth="1.5"/><circle cx="11" cy="6" r="2" stroke="currentColor" strokeWidth="1.5"/><path d="M1 13c0-2 1.5-3.5 5-3.5s5 1.5 5 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg> },
+    { key: 'details', label: t('episodeDetailPage.tabs.details'), icon: <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.5"/><path d="M8 5v3l2 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg> },
   ];
 
   return (
@@ -117,19 +139,19 @@ export default function EpisodeDetailPage() {
         <div className="dp-hero-fade" />
         <button className="dp-back" onClick={() => navigate(-1)}>
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M10 12L6 8l4-4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-          Back
+          {t('common.back')}
         </button>
         <div className="dp-hero-inner">
           <div className="dp-poster-wrap">
             <div className="dp-poster-glow" />
             <div className="dp-poster">
-              <LazyImage src={showData?.poster} alt={showData?.title} placeholder="Loading..." errorPlaceholder="No Poster" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+              <LazyImage src={showData?.poster} alt={showData?.title} placeholder={t('common.loading')} errorPlaceholder={t('common.noPoster')} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
             </div>
           </div>
           <div className="dp-hero-info">
-            <span className="dp-episode-badge">S{season} E{episode}</span>
+            <span className="dp-episode-badge">{formatSeasonEpisode(season, episode)}</span>
             <h1 className="dp-title">{showData?.title}</h1>
-            <div className="dp-episode-name">{epInfo.name || 'Untitled Episode'}</div>
+            <div className="dp-episode-name">{episodeTitle || t('episodeDetailPage.untitledEpisode')}</div>
             <div className="dp-meta-pills">
               {showData?.year && <span className="dp-pill">{showData.year}</span>}
               {epInfo.air_date && <span className="dp-pill">{formatDate(epInfo.air_date)}</span>}
@@ -141,7 +163,7 @@ export default function EpisodeDetailPage() {
                   <RatingRing rating={epInfo.vote_average} />
                   <div className="dp-rating-text">
                     <span className="dp-rating-score">{epInfo.vote_average.toFixed(1)}<small>/10</small></span>
-                    {epInfo.vote_count && <span className="dp-rating-votes">{epInfo.vote_count.toLocaleString()} votes</span>}
+                    {epInfo.vote_count && <span className="dp-rating-votes">{t('episodeDetailPage.voteCount', { count: formatNumber(epInfo.vote_count) })}</span>}
                   </div>
                 </>
               )}
@@ -150,13 +172,13 @@ export default function EpisodeDetailPage() {
               {episodeData.path && (
                 <button className="dp-btn dp-btn-play" onClick={() => { if (window.api?.openFile) window.api.openFile(episodeData.path); }}>
                   <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 2.5v11l9-5.5z" fill="currentColor"/></svg>
-                  Play Episode
+                  {t('episodeDetailPage.playEpisode')}
                 </button>
               )}
               {episodeData.path && (
                 <button className="dp-btn dp-btn-ghost" onClick={() => { if (window.api?.openFile) window.api.openFile(episodeData.path); }}>
                   <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 10v3a1 1 0 001 1h10a1 1 0 001-1v-3M5 6l3 3 3-3M8 2v7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                  Open File
+                  {t('common.openFile')}
                 </button>
               )}
             </div>
@@ -178,11 +200,11 @@ export default function EpisodeDetailPage() {
           {activeTab === 'overview' && (
             <div className="dp-overview" style={{ gridTemplateColumns: '1fr' }}>
               <div className="dp-overview-main">
-                <h2 className="dp-section-heading">Episode Overview</h2>
-                <p className="dp-synopsis">{epInfo.overview || 'No overview available for this episode.'}</p>
+                <h2 className="dp-section-heading">{t('episodeDetailPage.episodeSummary')}</h2>
+                <p className="dp-synopsis">{episodeOverview || t('episodeDetailPage.noEpisodeSummary')}</p>
                 {showData?.overview && (
                   <>
-                    <h3 className="dp-section-heading-sm">Show Overview</h3>
+                    <h3 className="dp-section-heading-sm">{t('episodeDetailPage.showSummary')}</h3>
                     <p className="dp-synopsis">{showData.overview}</p>
                   </>
                 )}
@@ -192,7 +214,7 @@ export default function EpisodeDetailPage() {
 
           {activeTab === 'cast' && (
             <div>
-              <h2 className="dp-section-heading">Cast ({cast.length})</h2>
+              <h2 className="dp-section-heading">{t('episodeDetailPage.castHeading', { count: formatNumber(cast.length) })}</h2>
               <div className="dp-people-grid">
                 {cast.slice(0, 12).map((person, i) => (
                   <div key={i} className="dp-person-card">
@@ -211,7 +233,7 @@ export default function EpisodeDetailPage() {
 
           {activeTab === 'crew' && (
             <div>
-              <h2 className="dp-section-heading">Crew ({crew.length})</h2>
+              <h2 className="dp-section-heading">{t('episodeDetailPage.crewHeading', { count: formatNumber(crew.length) })}</h2>
               <div className="dp-people-grid">
                 {crew.slice(0, 12).map((person, i) => (
                   <div key={i} className="dp-person-card">
@@ -230,42 +252,42 @@ export default function EpisodeDetailPage() {
 
           {activeTab === 'details' && (
             <div>
-              <h2 className="dp-section-heading">Episode Details</h2>
+              <h2 className="dp-section-heading">{t('episodeDetailPage.detailsHeading')}</h2>
               <div className="dp-details-grid">
                 <div className="dp-detail-card">
-                  <h3>Episode Information</h3>
+                  <h3>{t('episodeDetailPage.episodeInfo')}</h3>
                   <table className="dp-detail-table">
                     <tbody>
-                      <tr><td>Season</td><td>{season}</td></tr>
-                      <tr><td>Episode</td><td>{episode}</td></tr>
-                      {epInfo.air_date && <tr><td>Air Date</td><td>{formatDate(epInfo.air_date)}</td></tr>}
-                      {epInfo.runtime && <tr><td>Runtime</td><td>{formatRuntime(epInfo.runtime)}</td></tr>}
-                      {epInfo.vote_average > 0 && <tr><td>Rating</td><td style={{ color: '#ffe066' }}>★ {epInfo.vote_average.toFixed(1)}</td></tr>}
-                      {epInfo.vote_count > 0 && <tr><td>Votes</td><td>{epInfo.vote_count.toLocaleString()}</td></tr>}
+                      <tr><td>{t('episodeDetailPage.labels.season')}</td><td>{season}</td></tr>
+                      <tr><td>{t('episodeDetailPage.labels.episode')}</td><td>{episode}</td></tr>
+                      {epInfo.air_date && <tr><td>{t('episodeDetailPage.labels.airDate')}</td><td>{formatDate(epInfo.air_date, { year: 'numeric', month: 'long', day: 'numeric' })}</td></tr>}
+                      {epInfo.runtime && <tr><td>{t('episodeDetailPage.labels.runtime')}</td><td>{formatRuntime(epInfo.runtime)}</td></tr>}
+                      {epInfo.vote_average > 0 && <tr><td>{t('episodeDetailPage.labels.rating')}</td><td style={{ color: '#ffe066' }}>★ {epInfo.vote_average.toFixed(1)}</td></tr>}
+                      {epInfo.vote_count > 0 && <tr><td>{t('episodeDetailPage.labels.votes')}</td><td>{formatNumber(epInfo.vote_count)}</td></tr>}
                     </tbody>
                   </table>
                 </div>
                 <div className="dp-detail-card">
-                  <h3>Show Information</h3>
+                  <h3>{t('episodeDetailPage.showInfo')}</h3>
                   <table className="dp-detail-table">
                     <tbody>
-                      {showData?.status && <tr><td>Status</td><td>{showData.status}</td></tr>}
-                      {showData?.original_language && <tr><td>Language</td><td>{showData.original_language.toUpperCase()}</td></tr>}
-                      {showData?.origin_country?.length > 0 && <tr><td>Country</td><td>{showData.origin_country.join(', ')}</td></tr>}
-                      {showData?.vote_average > 0 && <tr><td>Show Rating</td><td style={{ color: '#ffe066' }}>★ {showData.vote_average.toFixed(1)}</td></tr>}
-                      {showData?.vote_count > 0 && <tr><td>Show Votes</td><td>{showData.vote_count.toLocaleString()}</td></tr>}
-                      {showData?.popularity > 0 && <tr><td>Popularity</td><td>{showData.popularity.toFixed(1)}</td></tr>}
+                      {showData?.status && <tr><td>{t('episodeDetailPage.labels.status')}</td><td>{translateStatus(showData.status)}</td></tr>}
+                      {showData?.original_language && <tr><td>{t('episodeDetailPage.labels.language')}</td><td>{showData.original_language.toUpperCase()}</td></tr>}
+                      {showData?.origin_country?.length > 0 && <tr><td>{t('episodeDetailPage.labels.country')}</td><td>{showData.origin_country.join(', ')}</td></tr>}
+                      {showData?.vote_average > 0 && <tr><td>{t('episodeDetailPage.labels.showRating')}</td><td style={{ color: '#ffe066' }}>★ {showData.vote_average.toFixed(1)}</td></tr>}
+                      {showData?.vote_count > 0 && <tr><td>{t('episodeDetailPage.labels.showVotes')}</td><td>{formatNumber(showData.vote_count)}</td></tr>}
+                      {showData?.popularity > 0 && <tr><td>{t('episodeDetailPage.labels.popularity')}</td><td>{showData.popularity.toFixed(1)}</td></tr>}
                     </tbody>
                   </table>
                 </div>
               </div>
               {episodeData.path && (
                 <div className="dp-detail-card" style={{ marginTop: '1.25rem' }}>
-                  <h3>File Location</h3>
+                  <h3>{t('episodeDetailPage.fileLocation')}</h3>
                   <code className="dp-filepath">{episodeData.path}</code>
                   <button className="dp-btn dp-btn-sm dp-btn-accent" onClick={() => { if (window.api?.openFile) window.api.openFile(episodeData.path); }}>
                     <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M2 10v3a1 1 0 001 1h10a1 1 0 001-1v-3M5 6l3 3 3-3M8 2v7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                    Open in File Explorer
+                    {t('episodeDetailPage.openInExplorer')}
                   </button>
                 </div>
               )}

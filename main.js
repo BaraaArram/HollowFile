@@ -3,10 +3,10 @@ const path = require('path');
 const fs = require('fs');
 const { getVideoFilesRecursive } = require('./fileUtils');
 const { parseFileName, searchVideoType } = require('./videoSearch');
-const { readResults, findInResults, addOrUpdateResult, getLastScanResults, findById } = require('./services/resultsService');
+const { readResults, findInResults, addOrUpdateResult, getLastScanResults, findById, deleteById, getResultFilePath, resultMatchesLibrary } = require('./services/resultsService');
 const { setMainWindow, emitScanProgress, resetScan, addLog } = require('./services/scanProgressService');
 const { handleMatchedResult } = require('./handlers/resultHandler');
-const { searchTVShowAndEpisode, normalizeTMDBResult, fetchVideos } = require('./services/tmdbService');
+const { searchTVShowAndEpisode, normalizeTMDBResult, fetchVideos, fetchTMDBResource, fetchLocalizedTMDBResourceWithStatus } = require('./services/tmdbService');
 const { downloadTrailer, isDownloaded, getTrailerPath, getTrailerStatuses, deleteTrailer } = require('./utils/trailerDownloader');
 const axios = require('axios');
 
@@ -40,11 +40,257 @@ function saveConfig(config) {
 
 const config = loadConfig();
 
+function createLibraryId(targetPath) {
+  const stem = (path.basename(targetPath || 'disk') || 'disk')
+    .replace(/[^a-zA-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .toLowerCase() || 'disk';
+  return `${stem}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+}
+
+function normalizeLibraryEntry(entry) {
+  if (!entry?.path || typeof entry.path !== 'string') {
+    return null;
+  }
+
+  const normalizedPath = path.resolve(entry.path);
+  return {
+    id: entry.id || createLibraryId(normalizedPath),
+    name: entry.name || path.basename(normalizedPath) || normalizedPath,
+    path: normalizedPath,
+    createdAt: entry.createdAt || new Date().toISOString(),
+    lastScannedAt: entry.lastScannedAt || null,
+  };
+}
+
+function getLegacyLibraryPath() {
+  return config.lastDirPath || config.lastDir || null;
+}
+
+function syncLibraryConfig() {
+  let changed = false;
+  config.settings = config.settings || {};
+
+  const dedupedLibraries = [];
+  const seenPaths = new Set();
+  for (const rawEntry of Array.isArray(config.settings.disks) ? config.settings.disks : []) {
+    const library = normalizeLibraryEntry(rawEntry);
+    if (!library) {
+      changed = true;
+      continue;
+    }
+
+    const key = library.path.toLowerCase();
+    if (seenPaths.has(key)) {
+      changed = true;
+      continue;
+    }
+
+    seenPaths.add(key);
+    dedupedLibraries.push(library);
+  }
+
+  const legacyPath = getLegacyLibraryPath();
+  if (legacyPath) {
+    const normalizedLegacyPath = path.resolve(legacyPath);
+    if (!seenPaths.has(normalizedLegacyPath.toLowerCase())) {
+      dedupedLibraries.push(normalizeLibraryEntry({ path: normalizedLegacyPath }));
+      seenPaths.add(normalizedLegacyPath.toLowerCase());
+      changed = true;
+    }
+  }
+
+  if (!Array.isArray(config.settings.disks) || config.settings.disks.length !== dedupedLibraries.length) {
+    changed = true;
+  }
+  config.settings.disks = dedupedLibraries;
+
+  const activeLibrary = dedupedLibraries.find((library) => library.id === config.settings.activeDiskId) || dedupedLibraries[0] || null;
+  if ((activeLibrary?.id || null) !== (config.settings.activeDiskId || null)) {
+    config.settings.activeDiskId = activeLibrary?.id || null;
+    changed = true;
+  }
+
+  const activePath = activeLibrary?.path || null;
+  if ((config.lastDirPath || null) !== activePath) {
+    config.lastDirPath = activePath;
+    changed = true;
+  }
+  if ((config.lastDir || null) !== activePath) {
+    config.lastDir = activePath;
+    changed = true;
+  }
+
+  if (changed) {
+    saveConfig(config);
+  }
+
+  return {
+    libraries: dedupedLibraries,
+    activeLibrary,
+  };
+}
+
+function getLibraryContext() {
+  return syncLibraryConfig();
+}
+
+function emitLibraryContextChanged() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  mainWindow.webContents.send('library-context-changed', getLibraryContext());
+}
+
+function upsertLibrary(targetPath, options = {}) {
+  const { makeActive = true } = options;
+  const normalizedPath = path.resolve(targetPath);
+  const context = getLibraryContext();
+  let library = context.libraries.find((entry) => entry.path.toLowerCase() === normalizedPath.toLowerCase()) || null;
+  let changed = false;
+
+  if (!library) {
+    library = normalizeLibraryEntry({ path: normalizedPath });
+    config.settings.disks = [...context.libraries, library];
+    changed = true;
+  }
+
+  if (makeActive && config.settings.activeDiskId !== library.id) {
+    config.settings.activeDiskId = library.id;
+    changed = true;
+  }
+
+  if (changed) {
+    syncLibraryConfig();
+    emitLibraryContextChanged();
+  }
+
+  return { library, ...getLibraryContext() };
+}
+
+function setActiveLibrary(libraryId) {
+  const context = getLibraryContext();
+  const library = context.libraries.find((entry) => entry.id === libraryId);
+  if (!library) {
+    throw new Error('Library not found');
+  }
+
+  config.settings.activeDiskId = library.id;
+  syncLibraryConfig();
+  emitLibraryContextChanged();
+  return getLibraryContext();
+}
+
+function removeLibrary(libraryId) {
+  const context = getLibraryContext();
+  const nextLibraries = context.libraries.filter((entry) => entry.id !== libraryId);
+  if (nextLibraries.length === context.libraries.length) {
+    throw new Error('Library not found');
+  }
+
+  config.settings.disks = nextLibraries;
+  if (config.settings.activeDiskId === libraryId) {
+    config.settings.activeDiskId = nextLibraries[0]?.id || null;
+  }
+  syncLibraryConfig();
+  emitLibraryContextChanged();
+  return getLibraryContext();
+}
+
+function markLibraryScanned(libraryId) {
+  const context = getLibraryContext();
+  const updatedLibraries = context.libraries.map((entry) => (
+    entry.id === libraryId
+      ? { ...entry, lastScannedAt: new Date().toISOString() }
+      : entry
+  ));
+  config.settings.disks = updatedLibraries;
+  syncLibraryConfig();
+  emitLibraryContextChanged();
+}
+
+function getActiveLibrary() {
+  return getLibraryContext().activeLibrary;
+}
+
+function attachLibraryToResult(result, library) {
+  if (!library) {
+    return result;
+  }
+
+  return {
+    ...result,
+    library: {
+      id: library.id,
+      name: library.name,
+      path: library.path,
+      lastScannedAt: library.lastScannedAt || null,
+    },
+  };
+}
+
+function getActiveLibraryResults() {
+  const activeLibrary = getActiveLibrary();
+  return activeLibrary ? getLastScanResults(activeLibrary) : readResults();
+}
+
+syncLibraryConfig();
+
 const TMDB_API_KEY = process.env.TMDB_API_KEY || config.tmdbApiKey || '8eb4d790426d7a9f45d2f34bad852ec6'; // Replace this if needed
 
 global.TMDB_API_KEY = TMDB_API_KEY;
 
 process.env.TMDB_API_KEY = TMDB_API_KEY;
+
+function mergeLocalizedResource(target, resourceKey, localizedEntries) {
+  Object.entries(localizedEntries || {}).forEach(([localeCode, data]) => {
+    if (!data) {
+      return;
+    }
+
+    if (!target[localeCode]) {
+      target[localeCode] = {};
+    }
+
+    target[localeCode][resourceKey] = data;
+  });
+
+  return target;
+}
+
+function mergeLocalizationChecks(target, resourceKey, checkEntries) {
+  Object.entries(checkEntries || {}).forEach(([localeCode, check]) => {
+    if (!target[localeCode]) {
+      target[localeCode] = {};
+    }
+
+    target[localeCode][resourceKey] = {
+      checked: !!check?.checked,
+      requestSucceeded: !!check?.requestSucceeded,
+      found: !!check?.found,
+      fields: {
+        title: !!check?.fields?.title,
+        overview: !!check?.fields?.overview,
+      },
+      checkedAt: check?.checkedAt || new Date().toISOString(),
+      language: check?.language,
+    };
+  });
+
+  return target;
+}
+
+function getResultDisplayTitle(result, locale = config.settings?.appLocale || 'en') {
+  const localized = locale === 'ar' ? result.fullApiData?.localized?.ar : null;
+  return localized?.movie?.title
+    || localized?.show?.name
+    || localized?.episode?.name
+    || result.final?.title
+    || result.title
+    || result.filename
+    || 'Unknown';
+}
 
 function createWindow() {
   const preloadPath = path.join(__dirname, 'preload.js');
@@ -107,15 +353,26 @@ ipcMain.handle('select-directory', async () => {
   if (result.canceled || result.filePaths.length === 0) return null;
 
   const selectedPath = result.filePaths[0];
-  config.lastDirPath = selectedPath;
-  saveConfig(config);
+  upsertLibrary(selectedPath, { makeActive: true });
 
   return selectedPath;
 });
 
 // Handle `get-saved-dir` request
 ipcMain.handle('get-saved-dir', () => {
-  return config.lastDirPath || null;
+  return getActiveLibrary()?.path || null;
+});
+
+ipcMain.handle('get-library-context', () => {
+  return getLibraryContext();
+});
+
+ipcMain.handle('set-active-library', (event, libraryId) => {
+  return setActiveLibrary(libraryId);
+});
+
+ipcMain.handle('remove-library', (event, libraryId) => {
+  return removeLibrary(libraryId);
 });
 
 // Expose TMDB API key for debugging (do not use in production)
@@ -144,7 +401,8 @@ ipcMain.handle('save-settings', (event, settings) => {
 
 ipcMain.handle('refresh-movie-data', async (event, identifier) => {
   try {
-    const results = readResults();
+    const activeLibrary = getActiveLibrary();
+    const results = activeLibrary ? getLastScanResults(activeLibrary) : readResults();
     let existing = null;
 
     if (!identifier) {
@@ -171,26 +429,37 @@ ipcMain.handle('refresh-movie-data', async (event, identifier) => {
         return { success: false, error: 'TV ID not found' };
       }
 
-      const showDetailsRes = await axios.get(`https://api.themoviedb.org/3/tv/${tvId}?api_key=${process.env.TMDB_API_KEY}`);
-      const showDetails = showDetailsRes.data;
-      const creditsRes = await axios.get(`https://api.themoviedb.org/3/tv/${tvId}/credits?api_key=${process.env.TMDB_API_KEY}`);
-      const credits = creditsRes.data;
+      const localizedPayload = {};
+      const localizationChecks = {};
+      const showDetails = await fetchTMDBResource(`tv/${tvId}`);
+      const localizedShowResult = await fetchLocalizedTMDBResourceWithStatus(`tv/${tvId}`, {}, showDetails);
+      mergeLocalizedResource(localizedPayload, 'show', localizedShowResult.localized);
+      mergeLocalizationChecks(localizationChecks, 'show', localizedShowResult.checks);
+      const credits = await fetchTMDBResource(`tv/${tvId}/credits`);
       const episode = existing.parsing?.episode || existing.episode || existing.fullApiData?.episode?.episode_number;
       const season = existing.parsing?.season || existing.season || existing.fullApiData?.episode?.season_number;
 
       // Fetch videos for TV show
       let videos = [];
       try { videos = await fetchVideos(tvId, 'tv'); } catch (e) { videos = []; }
-      let fullApiData = { show: showDetails, credits, videos };
+      let fullApiData = { show: showDetails, credits, videos, localized: localizedPayload };
 
       if (season && episode) {
         try {
-          const epRes = await axios.get(`https://api.themoviedb.org/3/tv/${tvId}/season/${season}/episode/${episode}?api_key=${process.env.TMDB_API_KEY}`);
-          fullApiData.episode = epRes.data;
+          fullApiData.episode = await fetchTMDBResource(`tv/${tvId}/season/${season}/episode/${episode}`);
+          const localizedEpisodeResult = await fetchLocalizedTMDBResourceWithStatus(
+            `tv/${tvId}/season/${season}/episode/${episode}`,
+            {},
+            fullApiData.episode
+          );
+          mergeLocalizedResource(localizedPayload, 'episode', localizedEpisodeResult.localized);
+          mergeLocalizationChecks(localizationChecks, 'episode', localizedEpisodeResult.checks);
         } catch (e) {
           fullApiData.episode = existing.fullApiData?.episode || null;
         }
       }
+
+      fullApiData.localizationChecks = localizationChecks;
 
       const normalized = normalizeTMDBResult({ id: showDetails.id, media_type: 'tv', name: showDetails.name, first_air_date: showDetails.first_air_date, poster_path: showDetails.poster_path, overview: showDetails.overview, popularity: showDetails.popularity, vote_average: showDetails.vote_average, vote_count: showDetails.vote_count });
 
@@ -218,10 +487,13 @@ ipcMain.handle('refresh-movie-data', async (event, identifier) => {
         return { success: false, error: 'Movie ID not found' };
       }
 
-      const movieDetailsRes = await axios.get(`https://api.themoviedb.org/3/movie/${movieId}?api_key=${process.env.TMDB_API_KEY}`);
-      const movieDetails = movieDetailsRes.data;
-      const creditsRes = await axios.get(`https://api.themoviedb.org/3/movie/${movieId}/credits?api_key=${process.env.TMDB_API_KEY}`);
-      const credits = creditsRes.data;
+      const localizedPayload = {};
+      const localizationChecks = {};
+      const movieDetails = await fetchTMDBResource(`movie/${movieId}`);
+      const localizedMovieResult = await fetchLocalizedTMDBResourceWithStatus(`movie/${movieId}`, {}, movieDetails);
+      mergeLocalizedResource(localizedPayload, 'movie', localizedMovieResult.localized);
+      mergeLocalizationChecks(localizationChecks, 'movie', localizedMovieResult.checks);
+      const credits = await fetchTMDBResource(`movie/${movieId}/credits`);
 
       const normalized = normalizeTMDBResult({ id: movieDetails.id, media_type: 'movie', title: movieDetails.title, release_date: movieDetails.release_date, poster_path: movieDetails.poster_path, overview: movieDetails.overview, popularity: movieDetails.popularity, vote_average: movieDetails.vote_average, vote_count: movieDetails.vote_count });
 
@@ -235,7 +507,7 @@ ipcMain.handle('refresh-movie-data', async (event, identifier) => {
         (movieDetails.release_date || '').slice(0, 4),
         dirPath,
         false,
-        { movie: movieDetails, credits, videos },
+        { movie: movieDetails, credits, videos, localized: localizedPayload, localizationChecks },
         1,
         1,
         true
@@ -249,7 +521,7 @@ ipcMain.handle('refresh-movie-data', async (event, identifier) => {
     }
 
     if (resultData) {
-      addOrUpdateResult(resultData);
+      addOrUpdateResult(attachLibraryToResult(resultData, activeLibrary || existing.library));
       event.sender.send('scan-complete');
       return { success: true, result: resultData };
     }
@@ -260,6 +532,222 @@ ipcMain.handle('refresh-movie-data', async (event, identifier) => {
     console.error('refresh-movie-data error', err);
     event.sender.send('scan-complete');
     return { success: false, error: err.message || 'Refresh failed' };
+  }
+});
+
+// Bulk refresh all cached metadata with localized data
+ipcMain.handle('refresh-all-metadata', async (event) => {
+  try {
+    const activeLibrary = getActiveLibrary();
+    const allResults = activeLibrary ? getLastScanResults(activeLibrary) : readResults();
+    event.sender.send('scan-progress', {
+      status: 'initializing',
+      currentFileIndex: 0,
+      totalFiles: allResults.length,
+      filename: ''
+    });
+
+    const stats = {
+      total: allResults.length,
+      success: 0,
+      failed: 0,
+      skipped: 0,
+      errors: []
+    };
+
+    for (let i = 0; i < allResults.length; i++) {
+      const existing = allResults[i];
+      const currentIndex = i + 1;
+
+      try {
+        // Send progress update
+        event.sender.send('refresh-progress', {
+          current: currentIndex,
+          total: allResults.length,
+          title: getResultDisplayTitle(existing),
+          status: 'refreshing'
+        });
+        event.sender.send('scan-progress', {
+          status: 'fetching-tmdb',
+          currentFileIndex: currentIndex,
+          totalFiles: allResults.length,
+          filename: existing.filename || getResultDisplayTitle(existing)
+        });
+
+        const dirPath = existing.path ? path.dirname(existing.path) : path.resolve(__dirname, '../');
+        let resultData = null;
+
+        // Determine if TV or Movie
+        const isTV = existing.final?.type === 'tv' || existing.type === 'tv' || existing.parsing?.isTV;
+
+        if (isTV) {
+          const tvId = existing.final?.id || existing.fullApiData?.show?.id;
+          if (!tvId) {
+            stats.skipped++;
+            continue;
+          }
+
+          try {
+            const localizedPayload = {};
+            const localizationChecks = {};
+            const showDetails = await fetchTMDBResource(`tv/${tvId}`);
+            const localizedShowResult = await fetchLocalizedTMDBResourceWithStatus(`tv/${tvId}`, {}, showDetails);
+            mergeLocalizedResource(localizedPayload, 'show', localizedShowResult.localized);
+            mergeLocalizationChecks(localizationChecks, 'show', localizedShowResult.checks);
+            const credits = await fetchTMDBResource(`tv/${tvId}/credits`);
+            const episode = existing.parsing?.episode || existing.episode || existing.fullApiData?.episode?.episode_number;
+            const season = existing.parsing?.season || existing.season || existing.fullApiData?.episode?.season_number;
+
+            // Fetch videos for TV show
+            let videos = [];
+            try { videos = await fetchVideos(tvId, 'tv'); } catch (e) { videos = []; }
+            let fullApiData = { show: showDetails, credits, videos, localized: localizedPayload };
+
+            if (season && episode) {
+              try {
+                fullApiData.episode = await fetchTMDBResource(`tv/${tvId}/season/${season}/episode/${episode}`);
+                const localizedEpisodeResult = await fetchLocalizedTMDBResourceWithStatus(
+                  `tv/${tvId}/season/${season}/episode/${episode}`,
+                  {},
+                  fullApiData.episode
+                );
+                mergeLocalizedResource(localizedPayload, 'episode', localizedEpisodeResult.localized);
+                mergeLocalizationChecks(localizationChecks, 'episode', localizedEpisodeResult.checks);
+              } catch (e) {
+                fullApiData.episode = existing.fullApiData?.episode || null;
+              }
+            }
+
+            fullApiData.localizationChecks = localizationChecks;
+
+            const normalized = normalizeTMDBResult({ id: showDetails.id, media_type: 'tv', name: showDetails.name, first_air_date: showDetails.first_air_date, poster_path: showDetails.poster_path, overview: showDetails.overview, popularity: showDetails.popularity, vote_average: showDetails.vote_average, vote_count: showDetails.vote_count });
+
+            const info = await handleMatchedResult(
+              existing.filename || existing.original_name || 'unknown',
+              normalized,
+              (showDetails.first_air_date || '').slice(0, 4),
+              dirPath,
+              false,
+              fullApiData,
+              1,
+              1,
+              true
+            );
+
+            resultData = {
+              ...existing,
+              ...info,
+              apiInfo: existing.apiInfo || []
+            };
+          } catch (tvErr) {
+            stats.failed++;
+            stats.errors.push({
+              title: getResultDisplayTitle(existing),
+              error: tvErr.message
+            });
+            continue;
+          }
+        } else {
+          const movieId = existing.final?.id || existing.fullApiData?.movie?.id;
+          if (!movieId) {
+            stats.skipped++;
+            continue;
+          }
+
+          try {
+            const localizedPayload = {};
+            const localizationChecks = {};
+            const movieDetails = await fetchTMDBResource(`movie/${movieId}`);
+            const localizedMovieResult = await fetchLocalizedTMDBResourceWithStatus(`movie/${movieId}`, {}, movieDetails);
+            mergeLocalizedResource(localizedPayload, 'movie', localizedMovieResult.localized);
+            mergeLocalizationChecks(localizationChecks, 'movie', localizedMovieResult.checks);
+            const credits = await fetchTMDBResource(`movie/${movieId}/credits`);
+
+            const normalized = normalizeTMDBResult({ id: movieDetails.id, media_type: 'movie', title: movieDetails.title, release_date: movieDetails.release_date, poster_path: movieDetails.poster_path, overview: movieDetails.overview, popularity: movieDetails.popularity, vote_average: movieDetails.vote_average, vote_count: movieDetails.vote_count });
+
+            // Fetch videos for movie
+            let videos = [];
+            try { videos = await fetchVideos(movieId, 'movie'); } catch (e) { videos = []; }
+
+            const info = await handleMatchedResult(
+              existing.filename || existing.original_name || 'unknown',
+              normalized,
+              (movieDetails.release_date || '').slice(0, 4),
+              dirPath,
+              false,
+              { movie: movieDetails, credits, videos, localized: localizedPayload, localizationChecks },
+              1,
+              1,
+              true
+            );
+
+            resultData = {
+              ...existing,
+              ...info,
+              apiInfo: existing.apiInfo || []
+            };
+          } catch (movieErr) {
+            stats.failed++;
+            stats.errors.push({
+              title: getResultDisplayTitle(existing),
+              error: movieErr.message
+            });
+            continue;
+          }
+        }
+
+        // Save updated result
+        if (resultData) {
+          addOrUpdateResult(attachLibraryToResult(resultData, activeLibrary || existing.library));
+          stats.success++;
+        } else {
+          stats.failed++;
+        }
+
+      } catch (itemErr) {
+        stats.failed++;
+        stats.errors.push({
+          title: getResultDisplayTitle(existing),
+          error: itemErr.message
+        });
+      }
+
+      // Throttle requests to avoid rate limiting (500ms delay)
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+
+    // Send completion update
+    event.sender.send('refresh-progress', {
+      current: allResults.length,
+      total: allResults.length,
+      status: 'complete',
+      stats
+    });
+    event.sender.send('scan-progress', {
+      status: 'scan-complete',
+      currentFileIndex: allResults.length,
+      totalFiles: allResults.length,
+      filename: ''
+    });
+    event.sender.send('scan-complete');
+
+    return {
+      success: true,
+      stats
+    };
+  } catch (err) {
+    console.error('refresh-all-metadata error', err);
+    event.sender.send('scan-progress', {
+      status: 'scan-complete',
+      currentFileIndex: 0,
+      totalFiles: 0,
+      filename: ''
+    });
+    event.sender.send('scan-complete');
+    return {
+      success: false,
+      error: err.message || 'Bulk refresh failed'
+    };
   }
 });
 
@@ -284,9 +772,11 @@ ipcMain.on('scan-directory-stream', async (event, { dirPath, options = {} }) => 
     return;
   }
 
+    const activeLibrary = upsertLibrary(dirPath, { makeActive: true }).library;
+
   const videoExtensions = ['.mp4', '.mkv', '.avi', '.mov'];
   const videoFiles = getVideoFilesRecursive(dirPath, videoExtensions);
-  const existingResults = readResults();
+  const existingResults = getLastScanResults(activeLibrary);
 
     // Initialize scan state
     resetScan(videoFiles.length);
@@ -303,7 +793,7 @@ ipcMain.on('scan-directory-stream', async (event, { dirPath, options = {} }) => 
         emitScanProgress('parsing', filename, { currentFileIndex, totalFiles: videoFiles.length });
 
     // Check if result for this filename already exists
-    const existing = existingResults.find(r => r.filename === filename);
+    const existing = existingResults.find((result) => result.filename === filename && resultMatchesLibrary(result, activeLibrary.id, activeLibrary.path));
     if (existing) {
           addLog(`Skipping ${filename} - already processed`);
           const progressEvent = {
@@ -328,7 +818,7 @@ ipcMain.on('scan-directory-stream', async (event, { dirPath, options = {} }) => 
         info = await searchVideoType(filename, parsing, path.dirname(fullPath), (step, extra) => {
         // step: 'downloading-poster', 'downloading-cast-image', 'downloading-crew-image', etc.
             emitScanProgress(step, filename, { currentFileIndex, totalFiles: videoFiles.length, ...extra });
-      }, options);
+        }, { ...options, library: activeLibrary });
       if (info && info.apiInfo) {
         apiInfo = info.apiInfo;
       }
@@ -351,6 +841,11 @@ ipcMain.on('scan-directory-stream', async (event, { dirPath, options = {} }) => 
         path: fullPath,
         filename,
         parsing,
+        library: {
+          id: activeLibrary.id,
+          name: activeLibrary.name,
+          path: activeLibrary.path,
+        },
         ...info,
         error,
       };
@@ -405,13 +900,14 @@ ipcMain.on('scan-directory-stream', async (event, { dirPath, options = {} }) => 
 
     // Final progress update
     addLog(`Scan completed. Processed ${videoFiles.length} files.`);
+    markLibraryScanned(activeLibrary.id);
     emitScanProgress('scan-complete', '', { currentFileIndex: videoFiles.length, totalFiles: videoFiles.length });
     event.sender.send('scan-complete');
 
     // Post-scan: batch download trailers (non-blocking, after all data is collected)
     if (options.autoDownloadTrailers) {
       try {
-        const allResults = readResults();
+        const allResults = getLastScanResults(activeLibrary);
         const trailerQueue = [];
         for (const result of allResults) {
           const videos = result.fullApiData?.videos || [];
@@ -471,7 +967,7 @@ ipcMain.on('scan-directory-stream', async (event, { dirPath, options = {} }) => 
 });
 
 ipcMain.handle('get-last-scan-results', () => {
-  return getLastScanResults();
+  return getActiveLibraryResults();
 });
 
 ipcMain.handle('open-file', async (event, filePath) => {
@@ -498,19 +994,17 @@ ipcMain.handle('read-person-data', async (event, personId) => {
 
 ipcMain.handle('clear-scan-results', async () => {
   try {
-    const resultsDir = path.join(__dirname, 'results');
-    const movieDir = path.join(resultsDir, 'movie');
-    const tvDir = path.join(resultsDir, 'tv');
+    const activeLibrary = getActiveLibrary();
     let count = 0;
-    for (const dir of [movieDir, tvDir]) {
-      if (fs.existsSync(dir)) {
-        const files = fs.readdirSync(dir, { recursive: true });
-        for (const file of files) {
-          const fp = path.join(dir, file);
-          if (fs.statSync(fp).isFile()) { fs.unlinkSync(fp); count++; }
-        }
+
+    for (const result of activeLibrary ? getLastScanResults(activeLibrary) : readResults()) {
+      const resultFilePath = getResultFilePath(result);
+      if (resultFilePath && fs.existsSync(resultFilePath)) {
+        fs.unlinkSync(resultFilePath);
+        count += 1;
       }
     }
+
     return { success: true, count };
   } catch (err) {
     console.error('Error clearing scan results:', err);
@@ -556,13 +1050,12 @@ function safeFileSize(filePath) {
 
 ipcMain.handle('get-media-storage-list', async () => {
   try {
-    const { readResults } = require('./services/resultsService');
     const peopleDir = path.join(__dirname, 'results', 'people');
-    const allResults = readResults();
+    const allResults = getActiveLibraryResults();
     const items = [];
 
     for (const r of allResults) {
-      const title = r.final?.title || r.title || r.filename || 'Unknown';
+      const title = getResultDisplayTitle(r);
       const year = r.final?.year || r.year || '';
       const type = r.final?.type || r.type || 'movie';
       const tmdbId = r.final?.id || r.id || '';
@@ -602,6 +1095,7 @@ ipcMain.handle('get-media-storage-list', async () => {
       const totalSize = fileSize + posterSize + backdropSize + castImgSize + trailerSize;
 
       items.push({
+        resultId: r.id,
         title, year, type, tmdbId,
         posterUrl,
         filePath,
@@ -625,20 +1119,29 @@ ipcMain.handle('get-media-storage-list', async () => {
 ipcMain.handle('get-storage-info', async () => {
   try {
     const resultsDir = path.join(__dirname, 'results');
-    const movieDir = path.join(resultsDir, 'movie');
-    const tvDir = path.join(resultsDir, 'tv');
     const peopleDir = path.join(resultsDir, 'people');
     const { TRAILERS_DIR } = require('./utils/trailerDownloader');
-    const { readResults } = require('./services/resultsService');
+    const activeLibrary = getActiveLibrary();
+    const allResults = getActiveLibraryResults();
 
     // Cached metadata sizes
-    const movieJsonSize = getDirSize(movieDir);
-    const tvJsonSize = getDirSize(tvDir);
+    let movieJsonSize = 0;
+    let tvJsonSize = 0;
+    let movieCount = 0;
+    let tvCount = 0;
+    for (const result of allResults) {
+      const resultPath = getResultFilePath(result);
+      const resultSize = safeFileSize(resultPath);
+      if ((result.final?.type || result.type) === 'tv') {
+        tvJsonSize += resultSize;
+        tvCount += 1;
+      } else {
+        movieJsonSize += resultSize;
+        movieCount += 1;
+      }
+    }
     const peopleSize = getDirSize(peopleDir);
     const trailersSize = getDirSize(TRAILERS_DIR);
-
-    const movieCount = countFiles(movieDir, '.json');
-    const tvCount = countFiles(tvDir, '.json');
     const peopleJsonCount = countFiles(peopleDir, '.json');
     const peopleImgCount = countFiles(peopleDir, '.jpg');
     const trailerCount = countFiles(TRAILERS_DIR, '.mp4');
@@ -646,7 +1149,6 @@ ipcMain.handle('get-storage-info', async () => {
     // Calculate actual media file sizes from scan results
     let movieFilesSize = 0;
     let movieFilesCount = 0;
-    const allResults = readResults();
     for (const r of allResults) {
       const filePath = r.path || r.filePath;
       if (filePath && fs.existsSync(filePath)) {
@@ -655,8 +1157,7 @@ ipcMain.handle('get-storage-info', async () => {
     }
 
     // Poster directory
-    const config = loadConfig();
-    const savedDir = config.lastDir || null;
+    const savedDir = activeLibrary?.path || null;
     let postersSize = 0;
     let postersCount = 0;
     if (savedDir) {
@@ -717,8 +1218,7 @@ ipcMain.handle('clear-people-data', async () => {
 
 ipcMain.handle('clear-posters', async () => {
   try {
-    const config = loadConfig();
-    const savedDir = config.lastDir || null;
+    const savedDir = getActiveLibrary()?.path || null;
     let count = 0;
     if (savedDir) {
       const postersDir = path.join(savedDir, 'Posters');
@@ -737,8 +1237,8 @@ ipcMain.handle('clear-posters', async () => {
 
 ipcMain.handle('delete-movie-data', async (event, { movieId }) => {
   try {
-    const { deleteById, findById } = require('./services/resultsService');
-    const result = findById(movieId);
+    const activeLibrary = getActiveLibrary();
+    const result = findById(movieId, activeLibrary ? { libraryId: activeLibrary.id, libraryPath: activeLibrary.path } : {});
     const deleted = { result: false, poster: false, backdrop: false, trailers: 0 };
 
     if (result) {
@@ -758,7 +1258,7 @@ ipcMain.handle('delete-movie-data', async (event, { movieId }) => {
       }
 
       // Delete result JSON
-      deleteById(movieId);
+      deleteById(result.id || movieId);
       deleted.result = true;
     }
 
@@ -770,8 +1270,8 @@ ipcMain.handle('delete-movie-data', async (event, { movieId }) => {
 
 ipcMain.handle('get-movie-storage', async (event, { movieId }) => {
   try {
-    const { findById, getResultFilePath } = require('./services/resultsService');
-    const result = findById(movieId);
+    const activeLibrary = getActiveLibrary();
+    const result = findById(movieId, activeLibrary ? { libraryId: activeLibrary.id, libraryPath: activeLibrary.path } : {});
     if (!result) return { success: false, error: 'Movie not found' };
 
     const items = [];
@@ -822,7 +1322,7 @@ ipcMain.handle('get-movie-storage', async (event, { movieId }) => {
     }
 
     // Cached metadata JSON
-    const resultPath = getResultFilePath(movieId);
+    const resultPath = getResultFilePath(result.id || movieId);
     if (resultPath && fs.existsSync(resultPath)) {
       items.push({ type: 'result', label: 'Cached Metadata', path: resultPath, size: fs.statSync(resultPath).size });
     }
@@ -886,8 +1386,8 @@ ipcMain.handle('get-tmdb-images', async (event, { tmdbId, mediaType }) => {
 // List locally downloaded posters and backdrops for a movie (for offline browsing)
 ipcMain.handle('get-local-images', async (event, { tmdbId }) => {
   try {
-    const { findById } = require('./services/resultsService');
-    const result = findById(tmdbId);
+    const activeLibrary = getActiveLibrary();
+    const result = findById(tmdbId, activeLibrary ? { libraryId: activeLibrary.id, libraryPath: activeLibrary.path } : {});
     if (!result) return { success: false, error: 'Movie not found' };
 
     const dirPath = result.path ? path.dirname(result.path) : null;
@@ -957,13 +1457,13 @@ ipcMain.handle('get-local-images', async (event, { tmdbId }) => {
 // Set a local image as the active poster or backdrop
 ipcMain.handle('set-local-image', async (event, { tmdbId, localPath, imageType }) => {
   try {
-    const { findById, getResultFilePath } = require('./services/resultsService');
-    const result = findById(tmdbId);
+    const activeLibrary = getActiveLibrary();
+    const result = findById(tmdbId, activeLibrary ? { libraryId: activeLibrary.id, libraryPath: activeLibrary.path } : {});
     if (!result) return { success: false, error: 'Movie not found' };
     if (!localPath || !fs.existsSync(localPath)) return { success: false, error: 'File not found' };
 
     const normalized = localPath.replace(/\\/g, '/');
-    const resultPath = getResultFilePath(tmdbId);
+    const resultPath = getResultFilePath(result.id || tmdbId);
     if (resultPath && fs.existsSync(resultPath)) {
       const resultData = JSON.parse(fs.readFileSync(resultPath, 'utf-8'));
       if (imageType === 'backdrop') {
@@ -987,8 +1487,8 @@ ipcMain.handle('set-local-image', async (event, { tmdbId, localPath, imageType }
 // Download a chosen TMDB image to replace the current poster or backdrop
 ipcMain.handle('download-tmdb-image', async (event, { tmdbId, imageUrl, imageType }) => {
   try {
-    const { findById, getResultFilePath } = require('./services/resultsService');
-    const result = findById(tmdbId);
+    const activeLibrary = getActiveLibrary();
+    const result = findById(tmdbId, activeLibrary ? { libraryId: activeLibrary.id, libraryPath: activeLibrary.path } : {});
     if (!result) return { success: false, error: 'Movie not found' };
 
     const dirPath = result.path ? path.dirname(result.path) : __dirname;
@@ -1018,7 +1518,7 @@ ipcMain.handle('download-tmdb-image', async (event, { tmdbId, imageUrl, imageTyp
     const localPath = destPath.replace(/\\/g, '/');
 
     // Update the result JSON to point to the new image
-    const resultPath = getResultFilePath(tmdbId);
+    const resultPath = getResultFilePath(result.id || tmdbId);
     if (resultPath && fs.existsSync(resultPath)) {
       const resultData = JSON.parse(fs.readFileSync(resultPath, 'utf-8'));
       if (imageType === 'backdrop') {

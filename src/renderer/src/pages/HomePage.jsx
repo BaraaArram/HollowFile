@@ -1,7 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import MovieCard from '../components/MovieCard';
 import ShowCard from '../components/ShowCard';
+import { useI18n } from '../contexts/i18nState';
+import { getCollectionName, getGenres, getMediaTitle } from '../utils/mediaLocalization';
 
 function groupBySeason(episodes) {
   const seasons = {};
@@ -13,11 +15,11 @@ function groupBySeason(episodes) {
   return seasons;
 }
 
-function groupByCollection(movies) {
+function groupByCollection(movies, locale) {
   const collections = {};
   const standalone = [];
   for (const movie of movies) {
-    const collection = movie.fullApiData?.movie?.belongs_to_collection?.name;
+    const collection = getCollectionName(movie, locale);
     if (collection) {
       if (!collections[collection]) collections[collection] = [];
       collections[collection].push(movie);
@@ -28,10 +30,10 @@ function groupByCollection(movies) {
   return { collections, standalone };
 }
 
-function groupShowsByTitle(episodes) {
+function groupShowsByTitle(episodes, locale) {
   const grouped = {};
   for (const ep of episodes) {
-    const title = ep.final?.title || ep.parsing?.cleanTitle || ep.filename;
+    const title = getMediaTitle(ep, locale);
     if (!grouped[title]) grouped[title] = [];
     grouped[title].push(ep);
   }
@@ -39,6 +41,7 @@ function groupShowsByTitle(episodes) {
 }
 
 export default function HomePage() {
+  const { t, formatNumber, translateGenre, locale } = useI18n();
   const [stats, setStats] = useState({ movies: 0, shows: 0, episodes: 0, collections: 0 });
   const [recentMovies, setRecentMovies] = useState([]);
   const [recentShows, setRecentShows] = useState([]);
@@ -47,9 +50,61 @@ export default function HomePage() {
   const [scanning, setScanning] = useState(false);
   const navigate = useNavigate();
 
+  const loadData = useCallback(async () => {
+    try {
+      if (window.api && window.api.getLastScanResults) {
+        const results = await window.api.getLastScanResults();
+        if (Array.isArray(results)) {
+          const movieFiles = results.filter(f => f.final?.type === 'movie');
+          const { collections } = groupByCollection(movieFiles, locale);
+          const tvFiles = results.filter(f => f.final?.type === 'tv');
+          const showsGrouped = groupShowsByTitle(tvFiles, locale);
+
+          setStats({
+            movies: movieFiles.length,
+            shows: showsGrouped.length,
+            episodes: tvFiles.length,
+            collections: Object.keys(collections).length
+          });
+
+          const sortedMovies = movieFiles
+            .sort((a, b) => new Date(b.final?.release_date || 0) - new Date(a.final?.release_date || 0))
+            .slice(0, 12);
+          setRecentMovies(sortedMovies);
+
+          const sortedShows = showsGrouped
+            .sort((a, b) => {
+              const aDate = a[1][0]?.final?.first_air_date || a[1][0]?.final?.release_date;
+              const bDate = b[1][0]?.final?.first_air_date || b[1][0]?.final?.release_date;
+              return new Date(bDate || 0) - new Date(aDate || 0);
+            })
+            .slice(0, 8);
+          setRecentShows(sortedShows);
+
+          const genreCount = {};
+          movieFiles.forEach(movie => {
+            const genres = getGenres(movie, locale);
+            genres.forEach(genre => {
+              genreCount[genre.name] = (genreCount[genre.name] || 0) + 1;
+            });
+          });
+          const topGenres = Object.entries(genreCount)
+            .sort(([,a], [,b]) => b - a)
+            .slice(0, 6)
+            .map(([name]) => name);
+          setPopularGenres(topGenres);
+        }
+      }
+    } catch (error) {
+      console.error('Error loading homepage data:', error);
+    } finally {
+      setLoading(false);
+    }
+  }, [locale]);
+
   useEffect(() => {
     loadData();
-  }, []);
+  }, [loadData]);
 
   const handleScan = async () => {
     if (scanning) return;
@@ -85,69 +140,23 @@ export default function HomePage() {
       }
     });
     return unsub;
-  }, []);
+  }, [loadData]);
 
   // Reload when images are changed via ImageBrowserModal
   useEffect(() => {
     const handler = () => loadData();
     window.addEventListener('media-data-changed', handler);
     return () => window.removeEventListener('media-data-changed', handler);
-  }, []);
+  }, [loadData]);
 
-  const loadData = async () => {
-    try {
-      if (window.api && window.api.getLastScanResults) {
-        const results = await window.api.getLastScanResults();
-        if (Array.isArray(results)) {
-          const movieFiles = results.filter(f => f.final?.type === 'movie');
-          const { collections } = groupByCollection(movieFiles);
-          const tvFiles = results.filter(f => f.final?.type === 'tv');
-          const showsGrouped = groupShowsByTitle(tvFiles);
-
-          setStats({
-            movies: movieFiles.length,
-            shows: showsGrouped.length,
-            episodes: tvFiles.length,
-            collections: Object.keys(collections).length
-          });
-
-          const sortedMovies = movieFiles
-            .sort((a, b) => new Date(b.final?.release_date || 0) - new Date(a.final?.release_date || 0))
-            .slice(0, 12);
-          setRecentMovies(sortedMovies);
-
-          const sortedShows = showsGrouped
-            .sort((a, b) => {
-              const aDate = a[1][0]?.final?.first_air_date || a[1][0]?.final?.release_date;
-              const bDate = b[1][0]?.final?.first_air_date || b[1][0]?.final?.release_date;
-              return new Date(bDate || 0) - new Date(aDate || 0);
-            })
-            .slice(0, 8);
-          setRecentShows(sortedShows);
-
-          const genreCount = {};
-          movieFiles.forEach(movie => {
-            const genres = movie.fullApiData?.movie?.genres || [];
-            genres.forEach(genre => {
-              genreCount[genre.name] = (genreCount[genre.name] || 0) + 1;
-            });
-          });
-          const topGenres = Object.entries(genreCount)
-            .sort(([,a], [,b]) => b - a)
-            .slice(0, 6)
-            .map(([name]) => name);
-          setPopularGenres(topGenres);
-        }
-      }
-    } catch (error) {
-      console.error('Error loading homepage data:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
+  useEffect(() => {
+    const handler = () => loadData();
+    window.addEventListener('library-context-changed', handler);
+    return () => window.removeEventListener('library-context-changed', handler);
+  }, [loadData]);
 
   if (loading) {
-    return <div className="dp-loading"><div className="dp-loading-spinner" /><span>Loading your library...</span></div>;
+    return <div className="dp-loading"><div className="dp-loading-spinner" /><span>{t('common.loadingLibrary')}</span></div>;
   }
 
   return (
@@ -156,39 +165,43 @@ export default function HomePage() {
       <section className="hp-hero">
         <div className="hp-hero-glow" />
         <div className="hp-hero-content">
-          <h1 className="hp-title">Your Library</h1>
+          <h1 className="hp-title">{t('home.title')}</h1>
           <p className="hp-subtitle">
-            {stats.movies} movies, {stats.shows} TV shows, and {stats.episodes} episodes
+            {t('home.summary', {
+              movies: formatNumber(stats.movies),
+              shows: formatNumber(stats.shows),
+              episodes: formatNumber(stats.episodes),
+            })}
           </p>
         </div>
         <div className="hp-stats">
           <div className="hp-stat">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><rect x="2" y="2" width="20" height="20" rx="2" stroke="var(--hk-accent)" strokeWidth="2"/><path d="M7 2v20M17 2v20M2 12h20" stroke="var(--hk-accent)" strokeWidth="2" strokeLinecap="round"/></svg>
             <span className="hp-stat-num">{stats.movies}</span>
-            <span className="hp-stat-label">Movies</span>
+            <span className="hp-stat-label">{t('home.movies')}</span>
           </div>
           <div className="hp-stat">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><rect x="2" y="7" width="20" height="15" rx="2" stroke="var(--hk-accent)" strokeWidth="2"/><path d="M17 2l-5 5-5-5" stroke="var(--hk-accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
             <span className="hp-stat-num">{stats.shows}</span>
-            <span className="hp-stat-label">TV Shows</span>
+            <span className="hp-stat-label">{t('home.shows')}</span>
           </div>
           <div className="hp-stat">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" stroke="var(--hk-accent)" strokeWidth="2"/><circle cx="12" cy="12" r="10" stroke="var(--hk-accent)" strokeWidth="2"/></svg>
             <span className="hp-stat-num">{stats.episodes}</span>
-            <span className="hp-stat-label">Episodes</span>
+            <span className="hp-stat-label">{t('home.episodes')}</span>
           </div>
           <div className="hp-stat">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" stroke="var(--hk-accent)" strokeWidth="2" strokeLinecap="round"/></svg>
             <span className="hp-stat-num">{stats.collections}</span>
-            <span className="hp-stat-label">Collections</span>
+            <span className="hp-stat-label">{t('home.collections')}</span>
           </div>
         </div>
         <div className="hp-hero-actions">
           <button className="dp-btn dp-btn-play" onClick={handleScan} disabled={scanning}>
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M1 8a7 7 0 0113.36-2.83M15 8A7 7 0 011.64 10.83" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/><path d="M14 1v4h-4M2 15v-4h4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-            {scanning ? 'Scanning...' : 'Scan Library'}
+            {scanning ? t('common.scanning') : t('common.scanLibrary')}
           </button>
-          <button className="dp-btn dp-btn-ghost" onClick={() => navigate('/movies')}>Browse All</button>
+          <button className="dp-btn dp-btn-ghost" onClick={() => navigate('/movies')}>{t('common.browseAll')}</button>
         </div>
       </section>
 
@@ -196,8 +209,8 @@ export default function HomePage() {
       {recentMovies.length > 0 && (
         <section className="hp-section">
           <div className="hp-section-header">
-            <h2 className="hp-section-title">Recent Movies</h2>
-            <button className="hp-view-all" onClick={() => navigate('/movies')}>View All &rarr;</button>
+            <h2 className="hp-section-title">{t('home.recentMovies')}</h2>
+            <button className="hp-view-all" onClick={() => navigate('/movies')}>{t('common.viewAll')} &rarr;</button>
           </div>
           <div className="hp-grid">
             {recentMovies.slice(0, 6).map((movie, idx) => (
@@ -212,8 +225,8 @@ export default function HomePage() {
       {recentShows.length > 0 && (
         <section className="hp-section">
           <div className="hp-section-header">
-            <h2 className="hp-section-title">Recent TV Shows</h2>
-            <button className="hp-view-all" onClick={() => navigate('/shows')}>View All &rarr;</button>
+            <h2 className="hp-section-title">{t('home.recentShows')}</h2>
+            <button className="hp-view-all" onClick={() => navigate('/shows')}>{t('common.viewAll')} &rarr;</button>
           </div>
           <div className="hp-grid hp-grid-shows">
             {recentShows.slice(0, 6).map(([showTitle, episodes], idx) => {
@@ -222,7 +235,7 @@ export default function HomePage() {
               const showId = episodes[0]?.final?.id || episodes[0]?.fullApiData?.show?.id || showTitle;
               const seasons = groupBySeason(episodes);
               return (
-                <ShowCard key={showTitle + idx} title={showTitle} poster={showPoster} year={year} seasons={seasons} showId={showId} />
+                <ShowCard key={showTitle + idx} title={showTitle} poster={showPoster} year={year} seasons={seasons} showId={showId} localeStatusItem={episodes[0]} />
               );
             })}
           </div>
@@ -233,13 +246,13 @@ export default function HomePage() {
       {popularGenres.length > 0 && (
         <section className="hp-section">
           <div className="hp-section-header">
-            <h2 className="hp-section-title">Popular Genres</h2>
+            <h2 className="hp-section-title">{t('home.popularGenres')}</h2>
           </div>
           <div className="hp-genres">
             {popularGenres.map(genre => (
               <button key={genre} className="hp-genre" onClick={() => navigate('/movies', { state: { genreFilter: genre } })}>
                 <span className="hp-genre-icon">{getGenreIcon(genre)}</span>
-                <span className="hp-genre-name">{genre}</span>
+                <span className="hp-genre-name">{translateGenre(genre)}</span>
               </button>
             ))}
           </div>
@@ -249,28 +262,28 @@ export default function HomePage() {
       {/* Quick Actions */}
       <section className="hp-section">
         <div className="hp-section-header">
-          <h2 className="hp-section-title">Quick Actions</h2>
+          <h2 className="hp-section-title">{t('home.quickActions')}</h2>
         </div>
         <div className="hp-actions-grid">
           <button className="hp-action-card" onClick={() => navigate('/movies')}>
             <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><rect x="2" y="2" width="20" height="20" rx="2" stroke="var(--hk-accent)" strokeWidth="2"/><path d="M7 2v20M17 2v20M2 12h20" stroke="var(--hk-accent)" strokeWidth="2" strokeLinecap="round"/></svg>
-            <span className="hp-action-title">Browse Movies</span>
-            <span className="hp-action-sub">Explore your movie collection</span>
+            <span className="hp-action-title">{t('home.browseMovies')}</span>
+            <span className="hp-action-sub">{t('home.browseMoviesSub')}</span>
           </button>
           <button className="hp-action-card" onClick={() => navigate('/shows')}>
             <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><rect x="2" y="7" width="20" height="15" rx="2" stroke="var(--hk-accent)" strokeWidth="2"/><path d="M17 2l-5 5-5-5" stroke="var(--hk-accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-            <span className="hp-action-title">Watch TV Shows</span>
-            <span className="hp-action-sub">Discover your favorite series</span>
+            <span className="hp-action-title">{t('home.watchShows')}</span>
+            <span className="hp-action-sub">{t('home.watchShowsSub')}</span>
           </button>
           <button className="hp-action-card" onClick={() => navigate('/unmatched')}>
             <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="8" stroke="var(--hk-accent)" strokeWidth="2"/><path d="M21 21l-4.35-4.35" stroke="var(--hk-accent)" strokeWidth="2" strokeLinecap="round"/></svg>
-            <span className="hp-action-title">Fix Unmatched</span>
-            <span className="hp-action-sub">Resolve unidentified files</span>
+            <span className="hp-action-title">{t('home.fixUnmatched')}</span>
+            <span className="hp-action-sub">{t('home.fixUnmatchedSub')}</span>
           </button>
           <button className="hp-action-card" onClick={() => navigate('/settings')}>
             <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="var(--hk-accent)" strokeWidth="2"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z" stroke="var(--hk-accent)" strokeWidth="2"/></svg>
-            <span className="hp-action-title">Settings</span>
-            <span className="hp-action-sub">Configure your library</span>
+            <span className="hp-action-title">{t('common.settings')}</span>
+            <span className="hp-action-sub">{t('home.settingsSub')}</span>
           </button>
         </div>
       </section>

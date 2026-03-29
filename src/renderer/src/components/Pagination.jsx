@@ -1,4 +1,5 @@
 import React from 'react';
+import { useI18n } from '../contexts/i18nState';
 
 export default function Pagination({ 
   currentPage, 
@@ -6,6 +7,7 @@ export default function Pagination({
   onPageChange, 
   totalItems = 0 
 }) {
+  const { t, formatNumber } = useI18n();
   if (totalPages <= 1) return null;
 
   const getPageNumbers = () => {
@@ -71,7 +73,7 @@ export default function Pagination({
           opacity: currentPage === 1 ? 0.5 : 1
         }}
       >
-        ← Previous
+        {t('pagination.previous')}
       </button>
 
       {/* Page numbers */}
@@ -115,7 +117,7 @@ export default function Pagination({
           opacity: currentPage === totalPages ? 0.5 : 1
         }}
       >
-        Next →
+        {t('pagination.next')}
       </button>
 
       {/* Info */}
@@ -125,7 +127,11 @@ export default function Pagination({
         marginLeft: 16,
         fontWeight: 500
       }}>
-        Page {currentPage} of {totalPages} ({totalItems} items)
+        {t('pagination.summary', {
+          current: formatNumber(currentPage),
+          total: formatNumber(totalPages),
+          items: formatNumber(totalItems),
+        })}
       </div>
     </div>
   );

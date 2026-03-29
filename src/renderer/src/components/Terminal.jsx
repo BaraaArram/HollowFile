@@ -1,6 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { useI18n } from '../contexts/i18nState';
 
 const Terminal = ({ logs, isVisible, onToggle, title = "Terminal" }) => {
+  const { t, formatTime } = useI18n();
   const [isMinimized, setIsMinimized] = useState(false);
   const [isMaximized, setIsMaximized] = useState(false);
   const terminalRef = useRef(null);
@@ -30,27 +32,27 @@ const Terminal = ({ logs, isVisible, onToggle, title = "Terminal" }) => {
     <div className={`terminal ${isMaximized ? 'maximized' : ''} ${isMinimized ? 'minimized' : ''}`}>
       <div className="terminal-header">
         <span className="terminal-title">
-          {title}
+          {title === 'Terminal' ? t('terminal.title') : title}
         </span>
         <div className="terminal-controls">
           <button
             className="terminal-btn"
             onClick={() => setIsMinimized(!isMinimized)}
-            title={isMinimized ? "Restore" : "Minimize"}
+            title={isMinimized ? t('common.restore') : t('common.minimize')}
           >
             {isMinimized ? '□' : '−'}
           </button>
           <button
             className="terminal-btn"
             onClick={() => setIsMaximized(!isMaximized)}
-            title={isMaximized ? "Restore" : "Maximize"}
+            title={isMaximized ? t('common.restore') : t('common.maximize')}
           >
             {isMaximized ? '❐' : '⬜'}
           </button>
           <button
             className="terminal-btn close"
             onClick={onToggle}
-            title="Close"
+            title={t('common.close')}
           >
             ✕
           </button>
@@ -62,14 +64,14 @@ const Terminal = ({ logs, isVisible, onToggle, title = "Terminal" }) => {
             logs.slice(-50).map((log, idx) => (
               <div key={idx} className={getLogClass(log.message)}>
                 <span className="terminal-timestamp">
-                  {new Date(log.timestamp).toLocaleTimeString()}
+                  {formatTime(log.timestamp)}
                 </span>
                 <span>{log.message}</span>
               </div>
             ))
           ) : (
             <div className="terminal-empty">
-              No logs available. Start a scan to see activity here.
+              {t('terminal.empty')}
             </div>
           )}
         </div>

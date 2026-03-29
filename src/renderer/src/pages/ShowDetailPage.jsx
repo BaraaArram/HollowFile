@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import EpisodeCard from '../components/EpisodeCard';
 import { useOffline } from '../contexts/offlineContextState';
+import { useI18n } from '../contexts/i18nState';
+import { getLocalizedRecords, getMediaOverview, getMediaTitle } from '../utils/mediaLocalization';
 
 function groupBySeason(episodes) {
   const seasons = {};
@@ -32,6 +34,7 @@ export default function ShowDetailPage() {
   const { showId } = useParams();
   const navigate = useNavigate();
   const { isOffline } = useOffline();
+  const { t, formatNumber, locale } = useI18n();
   const [episodes, setEpisodes] = useState([]);
   const [activeSeason, setActiveSeason] = useState(null);
   const [trailers, setTrailers] = useState([]);
@@ -64,7 +67,11 @@ export default function ShowDetailPage() {
       }
     };
     window.addEventListener('media-data-changed', handler);
-    return () => window.removeEventListener('media-data-changed', handler);
+    window.addEventListener('library-context-changed', handler);
+    return () => {
+      window.removeEventListener('media-data-changed', handler);
+      window.removeEventListener('library-context-changed', handler);
+    };
   }, [showId]);
 
   // Load trailers for the show
@@ -140,21 +147,22 @@ export default function ShowDetailPage() {
   };
 
   if (episodes.length === 0) {
-    return <div className="dp-loading"><div className="dp-loading-spinner" /><span>Show not found.</span></div>;
+    return <div className="dp-loading"><div className="dp-loading-spinner" /><span>{t('showDetailPage.notFound')}</span></div>;
   }
 
   const show = episodes[0];
+  const localizedShow = getLocalizedRecords(show, locale).show;
   const poster = show.final?.poster || show.final?.poster_path;
   const backdropLocal = show.final?.backdrop_path || show.backdrop_path;
-  const backdropTmdb = show.fullApiData?.show?.backdrop_path;
+  const backdropTmdb = localizedShow?.backdrop_path || show.fullApiData?.show?.backdrop_path;
   // Prefer local file if it's an absolute path, otherwise fall back to TMDB remote
   const backdrop = (backdropLocal && backdropLocal.match(/^[a-z]:/i)) ? backdropLocal
     : (backdropLocal && backdropLocal.startsWith('file://')) ? backdropLocal
     : (backdropTmdb || backdropLocal);
-  const title = show.final?.title || show.parsing?.cleanTitle || show.filename;
-  const year = show.final?.year || show.parsing?.year || '';
-  const overview = show.final?.overview || show.fullApiData?.show?.overview || '';
-  const rating = show.fullApiData?.show?.vote_average;
+  const title = getMediaTitle(show, locale);
+  const year = show.final?.year || localizedShow?.first_air_date?.slice(0, 4) || show.parsing?.year || '';
+  const overview = getMediaOverview(show, locale);
+  const rating = localizedShow?.vote_average || show.fullApiData?.show?.vote_average;
   const seasons = groupBySeason(episodes);
   const seasonKeys = Object.keys(seasons).sort((a, b) => parseInt(a) - parseInt(b));
   const currentSeason = activeSeason || seasonKeys[0];
@@ -168,22 +176,22 @@ export default function ShowDetailPage() {
         <div className="sdp-hero-fade" />
         <button className="dp-back" onClick={() => navigate(-1)}>
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M10 12L6 8l4-4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-          Back
+          {t('common.back')}
         </button>
         <div className="sdp-hero-inner">
           <div className="sdp-poster-wrap">
             {poster ? (
               <img className="sdp-poster" src={toFileUrl(poster)} alt={title} />
             ) : (
-              <div className="sdp-poster sdp-poster-empty">No Poster</div>
+              <div className="sdp-poster sdp-poster-empty">{t('common.noPoster')}</div>
             )}
           </div>
           <div className="sdp-hero-info">
             <h1 className="sdp-title">{title}</h1>
             <div className="sdp-meta">
               {year && <span className="dp-pill">{year}</span>}
-              <span className="dp-pill">{seasonKeys.length} Season{seasonKeys.length !== 1 ? 's' : ''}</span>
-              <span className="dp-pill">{episodes.length} Episode{episodes.length !== 1 ? 's' : ''}</span>
+              <span className="dp-pill">{t('showDetailPage.seasonsCount', { count: formatNumber(seasonKeys.length) })}</span>
+              <span className="dp-pill">{t('showDetailPage.episodesCount', { count: formatNumber(episodes.length) })}</span>
               {rating > 0 && <span className="dp-pill" style={{ color: '#ffe066' }}>★ {rating.toFixed(1)}</span>}
             </div>
             {overview && <p className="sdp-overview">{overview}</p>}
@@ -196,7 +204,7 @@ export default function ShowDetailPage() {
         {/* Trailers Section */}
         {showTrailers && trailers.length > 0 && (
           <div className="dp-trailers sdp-trailers-section">
-            <h2 className="dp-section-heading">Trailers & Videos</h2>
+            <h2 className="dp-section-heading">{t('showDetailPage.trailersHeading')}</h2>
             {/* Video Player */}
             {activeTrailer && trailerStatuses[activeTrailer]?.downloaded && (
               <div className="dp-trailer-player-wrap">
@@ -211,7 +219,7 @@ export default function ShowDetailPage() {
                   <span className="dp-trailer-player-name">{trailers.find(t => t.key === activeTrailer)?.name}</span>
                   <button className="dp-trailer-player-close" onClick={() => setActiveTrailer(null)}>
                     <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
-                    Close
+                    {t('common.close')}
                   </button>
                 </div>
               </div>
@@ -243,7 +251,7 @@ export default function ShowDetailPage() {
                         {unavailableOffline ? (
                           <div className="dp-trailer-card-offline-msg">
                             <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M1 1l22 22M16.72 11.06A10.94 10.94 0 0119 12.55M5 12.55a10.94 10.94 0 015.17-2.39M10.71 5.05A16 16 0 0122.56 9M1.42 9a15.91 15.91 0 014.7-2.88M8.53 16.11a6 6 0 016.95 0M12 20h.01" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                            <span>Offline</span>
+                            <span>{t('common.offline')}</span>
                           </div>
                         ) : isDownloading ? (
                           <div className="dp-trailer-card-dl-progress">
@@ -263,19 +271,19 @@ export default function ShowDetailPage() {
                         ) : (
                           <div className="dp-trailer-card-download">
                             <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                            <span>Download</span>
+                            <span>{t('common.download')}</span>
                           </div>
                         )}
                       </div>
                       <div className="dp-trailer-card-badges">
                         <span className={`dp-trailer-badge dp-trailer-badge-${v.type?.toLowerCase()}`}>{v.type}</span>
-                        {v.official && <span className="dp-trailer-badge dp-trailer-badge-official">Official</span>}
-                        {canPlay && <span className="dp-trailer-badge dp-trailer-badge-downloaded">Downloaded</span>}
+                        {v.official && <span className="dp-trailer-badge dp-trailer-badge-official">{t('common.official')}</span>}
+                        {canPlay && <span className="dp-trailer-badge dp-trailer-badge-downloaded">{t('common.downloaded')}</span>}
                       </div>
                     </div>
                     <div className="dp-trailer-card-body">
                       <span className="dp-trailer-card-name">{v.name}</span>
-                      <span className="dp-trailer-card-sub">{canPlay ? 'Click to play' : unavailableOffline ? 'Not downloaded — unavailable offline' : isDownloading ? 'Downloading...' : 'Click to download & play'}</span>
+                      <span className="dp-trailer-card-sub">{canPlay ? t('showDetailPage.clickToPlay') : unavailableOffline ? t('showDetailPage.unavailableOffline') : isDownloading ? t('showDetailPage.downloading') : t('showDetailPage.clickToDownloadAndPlay')}</span>
                     </div>
                   </div>
                 );
@@ -291,7 +299,7 @@ export default function ShowDetailPage() {
               className={`sdp-season-tab${currentSeason === s ? ' active' : ''}`}
               onClick={() => setActiveSeason(s)}
             >
-              Season {s}
+              {t('showsPage.season', { season: formatNumber(s) })}
               <span className="sdp-season-count">{seasons[s].length}</span>
             </button>
           ))}

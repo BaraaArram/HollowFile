@@ -5,6 +5,74 @@ const crypto = require('crypto');
 
 const resultsDir = path.resolve(__dirname, '../results');
 
+function normalizeFsPath(targetPath) {
+  if (!targetPath || typeof targetPath !== 'string') {
+    return null;
+  }
+
+  return path.resolve(targetPath);
+}
+
+function getResultLibraryId(result) {
+  const rawLibraryId = result?.library?.id;
+  if (!rawLibraryId) {
+    return 'global';
+  }
+
+  return String(rawLibraryId).replace(/[^a-zA-Z0-9_-]+/g, '_');
+}
+
+function resultMatchesLibrary(result, libraryId, libraryPath) {
+  if (!libraryId && !libraryPath) {
+    return true;
+  }
+
+  if (libraryId && result?.library?.id === libraryId) {
+    return true;
+  }
+
+  const mediaPath = normalizeFsPath(result?.path || result?.filePath);
+  const normalizedLibraryPath = normalizeFsPath(libraryPath);
+  if (mediaPath && normalizedLibraryPath) {
+    const mediaLower = mediaPath.toLowerCase();
+    const libraryLower = normalizedLibraryPath.toLowerCase();
+    return mediaLower === libraryLower || mediaLower.startsWith(`${libraryLower}${path.sep}`.toLowerCase());
+  }
+
+  return false;
+}
+
+function listResultFiles() {
+  const files = [];
+  const roots = [path.join(resultsDir, 'movie'), path.join(resultsDir, 'tv')];
+
+  const walk = (dirPath) => {
+    if (!fs.existsSync(dirPath)) {
+      return;
+    }
+
+    for (const entry of fs.readdirSync(dirPath, { withFileTypes: true })) {
+      const fullPath = path.join(dirPath, entry.name);
+      if (entry.isDirectory()) {
+        walk(fullPath);
+      } else if (entry.isFile() && entry.name.endsWith('.json')) {
+        files.push(fullPath);
+      }
+    }
+  };
+
+  roots.forEach(walk);
+  return files;
+}
+
+function loadResultFromFile(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+  } catch (error) {
+    return null;
+  }
+}
+
 // Ensure results directory exists
 if (!fs.existsSync(resultsDir)) {
   fs.mkdirSync(resultsDir);
@@ -12,11 +80,12 @@ if (!fs.existsSync(resultsDir)) {
 
 // Generate a unique result ID using TMDB id and type, fallback to file path hash
 function getResultId(result) {
+  const libraryId = getResultLibraryId(result);
   if (result.final && result.final.id && result.final.type) {
-    return `${result.final.type}_${result.final.id}`;
+    return `${result.final.type}_${result.final.id}_${libraryId}`;
   }
   if (result.id && result.type) {
-    return `${result.type}_${result.id}`;
+    return `${result.type}_${result.id}_${libraryId}`;
   }
   // fallback: hash file path
   if (result.filePath || result.path) {
@@ -64,29 +133,27 @@ function getResultFilePath(resultOrId) {
   let result = resultOrId;
   if (typeof resultOrId === 'string' || typeof resultOrId === 'number') {
     resultOrId = String(resultOrId);
-    // Try to find the file by id in all subdirs
-    const subdirs = [path.join(resultsDir, 'tv'), path.join(resultsDir, 'movie')];
-    for (const subdir of subdirs) {
-      if (!fs.existsSync(subdir)) continue;
-      const files = fs.readdirSync(subdir);
-      for (const file of files) {
-        if (file.endsWith(`${resultOrId}.json`)) {
-          return path.join(subdir, file);
-        }
+    for (const filePath of listResultFiles()) {
+      const fileName = path.basename(filePath);
+      if (fileName.endsWith(`${resultOrId}.json`)) {
+        return filePath;
       }
-      // For TV, check show subdirs
-      if (subdir.endsWith('/tv') || subdir.endsWith('\\tv')) {
-        const shows = fs.readdirSync(subdir);
-        for (const show of shows) {
-          const showDir = path.join(subdir, show);
-          if (!fs.existsSync(showDir) || !fs.statSync(showDir).isDirectory()) continue;
-          const showFiles = fs.readdirSync(showDir);
-          for (const file of showFiles) {
-            if (file.endsWith(`${resultOrId}.json`)) {
-              return path.join(showDir, file);
-            }
-          }
-        }
+
+      const loaded = loadResultFromFile(filePath);
+      if (!loaded) {
+        continue;
+      }
+
+      const knownIds = [
+        loaded.id,
+        loaded.final?.id,
+        loaded.fullApiData?.movie?.id,
+        loaded.fullApiData?.show?.id,
+        loaded.filename,
+      ].map((value) => String(value)).filter(Boolean);
+
+      if (knownIds.includes(resultOrId)) {
+        return filePath;
       }
     }
     return null;
@@ -105,32 +172,14 @@ function ensureDir(dir) {
 
 function readResults() {
   const allResults = [];
-  const movieDir = path.join(resultsDir, 'movie');
-  const tvDir = path.join(resultsDir, 'tv');
-  // Movies
-  if (fs.existsSync(movieDir)) {
-    for (const file of fs.readdirSync(movieDir)) {
-      if (file.endsWith('.json')) {
-        try {
-          allResults.push(JSON.parse(fs.readFileSync(path.join(movieDir, file), 'utf-8')));
-        } catch (e) {}
-      }
+
+  for (const filePath of listResultFiles()) {
+    const loaded = loadResultFromFile(filePath);
+    if (loaded) {
+      allResults.push(loaded);
     }
   }
-  // TV
-  if (fs.existsSync(tvDir)) {
-    for (const show of fs.readdirSync(tvDir)) {
-      const showDir = path.join(tvDir, show);
-      if (!fs.statSync(showDir).isDirectory()) continue;
-      for (const file of fs.readdirSync(showDir)) {
-        if (file.endsWith('.json')) {
-          try {
-            allResults.push(JSON.parse(fs.readFileSync(path.join(showDir, file), 'utf-8')));
-          } catch (e) {}
-        }
-      }
-    }
-    }
+
   return allResults;
 }
 
@@ -184,11 +233,27 @@ function addOrUpdateResult(newResult) {
   }
 }
 
-function findById(id) {
+function findById(id, options = {}) {
+  const { libraryId, libraryPath } = options;
   const filePath = getResultFilePath(id);
   if (filePath && fs.existsSync(filePath)) {
-    return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    const result = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    if (resultMatchesLibrary(result, libraryId, libraryPath)) {
+      return result;
+    }
   }
+
+  return readResults().find((result) => {
+    const knownIds = [
+      result.id,
+      result.final?.id,
+      result.fullApiData?.movie?.id,
+      result.fullApiData?.show?.id,
+      result.filename,
+    ].map((value) => String(value)).filter(Boolean);
+    return knownIds.includes(String(id)) && resultMatchesLibrary(result, libraryId, libraryPath);
+  }) || null;
+
   return null;
 }
 
@@ -212,9 +277,14 @@ function deleteById(id) {
   return false;
 }
 
-function findInResults(parsedData, results) {
+function findInResults(parsedData, results, options = {}) {
+  const { libraryId, libraryPath } = options;
   // Strict match: require cleanTitle and year to match exactly
   for (const result of results) {
+    if (!resultMatchesLibrary(result, libraryId, libraryPath)) {
+      continue;
+    }
+
     // Prefer final.cleanTitle/year if present, else fallback
     const resultCleanTitle = (result.final && result.final.cleanTitle) || result.cleanTitle || result.title || result.name || '';
     const resultYear = (result.final && result.final.year) || result.year || (result.release_date || result.first_air_date || '').slice(0, 4);
@@ -235,7 +305,16 @@ function findInResults(parsedData, results) {
 }
 
 function getLastScanResults() {
-  return readResults();
+  const libraryArg = arguments[0];
+  if (!libraryArg) {
+    return readResults();
+  }
+
+  if (typeof libraryArg === 'string') {
+    return readResults().filter((result) => resultMatchesLibrary(result, libraryArg, null));
+  }
+
+  return readResults().filter((result) => resultMatchesLibrary(result, libraryArg.id, libraryArg.path));
 }
 
 module.exports = {
@@ -248,5 +327,6 @@ module.exports = {
   deleteById,
   findInResults,
   writeResult,
-  getLastScanResults
+  getLastScanResults,
+  resultMatchesLibrary
 };

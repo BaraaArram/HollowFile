@@ -1,6 +1,6 @@
 const { api: apiLogger, download: downloadLogger, result: resultLogger } = require('./logger.js');
 const  parseFileName  = require('./utils/nameParser');
-const { searchTMDB, scoreResults, findBestMatch, searchTVShowAndEpisode, normalizeTMDBResult, fetchVideos } = require('./services/tmdbService');
+const { searchTMDB, scoreResults, findBestMatch, searchTVShowAndEpisode, normalizeTMDBResult, fetchVideos, fetchTMDBResource, fetchLocalizedTMDBResourceWithStatus } = require('./services/tmdbService');
 const { readResults, findInResults } = require('./services/resultsService');
 const { handleMatchedResult } = require('./handlers/resultHandler');
 const { emitScanProgress } = require('./services/scanProgressService');
@@ -10,6 +10,7 @@ const axios = require('axios');
 
 async function searchVideoType(originalName, parsedTitle, dirPath, progressCallback, options = {}) {
   const { downloadCastImages = true } = options;
+  const activeLibrary = options.library || null;
   apiLogger.debug('Parsed title object', parsedTitle);
   const titleList = parsedTitle.extendedTitles;
   if (!Array.isArray(titleList)) {
@@ -20,7 +21,10 @@ async function searchVideoType(originalName, parsedTitle, dirPath, progressCallb
   apiLogger.info(`Starting search for: ${parsedTitle.originalName}`);
 
   const existingResults = readResults();
-  const existingResult = findInResults(parsedTitle, existingResults);
+  const existingResult = findInResults(parsedTitle, existingResults, {
+    libraryId: activeLibrary?.id,
+    libraryPath: activeLibrary?.path || dirPath,
+  });
 
   if (existingResult) {
     apiLogger.info(`Found existing result: ${existingResult.title}`);
@@ -37,6 +41,40 @@ async function searchVideoType(originalName, parsedTitle, dirPath, progressCallb
   let bestEpisode = null;
   let bestApiInfo = null; // Track apiInfo for the best match
   let apiInfo = [];
+  const localizedPayload = {};
+  const localizationChecks = {};
+  const mergeLocalizedResource = (resourceKey, localizedEntries) => {
+    Object.entries(localizedEntries || {}).forEach(([localeCode, data]) => {
+      if (!data) {
+        return;
+      }
+
+      if (!localizedPayload[localeCode]) {
+        localizedPayload[localeCode] = {};
+      }
+
+      localizedPayload[localeCode][resourceKey] = data;
+    });
+  };
+  const mergeLocalizationChecks = (resourceKey, checkEntries) => {
+    Object.entries(checkEntries || {}).forEach(([localeCode, check]) => {
+      if (!localizationChecks[localeCode]) {
+        localizationChecks[localeCode] = {};
+      }
+
+      localizationChecks[localeCode][resourceKey] = {
+        checked: !!check?.checked,
+        requestSucceeded: !!check?.requestSucceeded,
+        found: !!check?.found,
+        fields: {
+          title: !!check?.fields?.title,
+          overview: !!check?.fields?.overview,
+        },
+        checkedAt: check?.checkedAt || new Date().toISOString(),
+        language: check?.language,
+      };
+    });
+  };
 
   // If TV show, use new TMDB search logic
   if (parsedTitle.isTV) {
@@ -93,30 +131,58 @@ async function searchVideoType(originalName, parsedTitle, dirPath, progressCallb
       });
     }
     if (tvResult && tvResult.show) {
+      let showDetails = tvResult.show;
+      try {
+        if (tvResult.show.id) {
+          showDetails = await fetchTMDBResource(`tv/${tvResult.show.id}`);
+          const localizedShowResult = await fetchLocalizedTMDBResourceWithStatus(`tv/${tvResult.show.id}`, {}, showDetails);
+          mergeLocalizedResource('show', localizedShowResult.localized);
+          mergeLocalizationChecks('show', localizedShowResult.checks);
+        }
+      } catch (e) {
+        showDetails = tvResult.show;
+      }
+
+      let episodeDetails = tvResult.episode;
+      if (tvResult.show.id && season && episode) {
+        try {
+          episodeDetails = await fetchTMDBResource(`tv/${tvResult.show.id}/season/${season}/episode/${episode}`);
+          const localizedEpisodeResult = await fetchLocalizedTMDBResourceWithStatus(
+            `tv/${tvResult.show.id}/season/${season}/episode/${episode}`,
+            {},
+            episodeDetails
+          );
+          mergeLocalizedResource('episode', localizedEpisodeResult.localized);
+          mergeLocalizationChecks('episode', localizedEpisodeResult.checks);
+        } catch (e) {
+          episodeDetails = tvResult.episode;
+        }
+      }
+
       // Fetch credits for the show (if available)
       let credits = null;
       try {
-        if (tvResult.show.id) {
-          const creditsUrl = `https://api.themoviedb.org/3/tv/${tvResult.show.id}/credits?api_key=${process.env.TMDB_API_KEY}`;
-          const creditsRes = await fetch(creditsUrl);
-          credits = await creditsRes.json();
+        if (showDetails.id) {
+          credits = await fetchTMDBResource(`tv/${showDetails.id}/credits`);
         }
       } catch (e) { credits = null; }
       // Fetch trailer videos
       let videos = [];
       try {
-        if (tvResult.show.id) {
-          videos = await fetchVideos(tvResult.show.id, 'tv');
+        if (showDetails.id) {
+          videos = await fetchVideos(showDetails.id, 'tv');
         }
       } catch (e) { videos = []; }
       // Use handleMatchedResult to get local poster path in final
       const info = await handleMatchedResult(
         originalName,
-        normalizeTMDBResult(tvResult.show),
-        (tvResult.show.first_air_date || '').slice(0, 4),
+        normalizeTMDBResult(showDetails),
+        (showDetails.first_air_date || '').slice(0, 4),
         dirPath,
         false,
-        { show: tvResult.show, episode: tvResult.episode, credits, videos },
+        { show: showDetails, episode: episodeDetails, credits, videos, localized: localizedPayload, localizationChecks },
+        1,
+        1,
         downloadCastImages
       );
       // Always set info.final to the returned finalWithPosterPath
@@ -270,18 +336,17 @@ async function searchVideoType(originalName, parsedTitle, dirPath, progressCallb
     let fullDetails = null;
     try {
       if (bestOverall.id) {
-        const detailsUrl = `https://api.themoviedb.org/3/movie/${bestOverall.id}?api_key=${process.env.TMDB_API_KEY}`;
-        const detailsRes = await axios.get(detailsUrl);
-        fullDetails = detailsRes.data;
+        fullDetails = await fetchTMDBResource(`movie/${bestOverall.id}`);
+        const localizedMovieResult = await fetchLocalizedTMDBResourceWithStatus(`movie/${bestOverall.id}`, {}, fullDetails);
+        mergeLocalizedResource('movie', localizedMovieResult.localized);
+        mergeLocalizationChecks('movie', localizedMovieResult.checks);
       }
     } catch (e) { fullDetails = null; }
     // Fetch credits for the movie (if available)
     let credits = null;
     try {
       if (bestOverall.id) {
-        const creditsUrl = `https://api.themoviedb.org/3/movie/${bestOverall.id}/credits?api_key=${process.env.TMDB_API_KEY}`;
-        const creditsRes = await fetch(creditsUrl);
-        credits = await creditsRes.json();
+        credits = await fetchTMDBResource(`movie/${bestOverall.id}/credits`);
       }
     } catch (e) { credits = null; }
     // Fetch trailer videos
@@ -297,7 +362,9 @@ async function searchVideoType(originalName, parsedTitle, dirPath, progressCallb
       bestMatchObj.resultYear,
       dirPath,
       isMismatch,
-      { movie: fullDetails || bestOverall, credits, videos },
+      { movie: fullDetails || bestOverall, credits, videos, localized: localizedPayload, localizationChecks },
+      1,
+      1,
       downloadCastImages
     );
     info.type = bestType;

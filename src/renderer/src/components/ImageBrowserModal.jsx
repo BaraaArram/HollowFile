@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import { useOffline } from '../contexts/offlineContextState';
+import { useI18n } from '../contexts/i18nState';
 
 /* ── Shared IntersectionObserver for all cards ── */
 const _observerCallbacks = new Map();
@@ -27,6 +28,7 @@ function getSharedObserver() {
 
 /* ── Lazy thumbnail card (memoized) ── */
 const LazyCard = memo(function LazyCard({ img, isDownloading, onPreview, onDownload }) {
+  const { t } = useI18n();
   const ref = useRef(null);
   const [inView, setInView] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -79,7 +81,7 @@ const LazyCard = memo(function LazyCard({ img, isDownloading, onPreview, onDownl
       </div>
       <div className="ibm-card-info">
         {isLocal ? (
-          <span className="ibm-card-res ibm-card-local-label">{img.fileName || 'Local file'}</span>
+          <span className="ibm-card-res ibm-card-local-label">{img.fileName || t('imageBrowser.localFile')}</span>
         ) : (
           <>
             <span className="ibm-card-res">{img.width}×{img.height}</span>
@@ -94,16 +96,16 @@ const LazyCard = memo(function LazyCard({ img, isDownloading, onPreview, onDownl
         onClick={handleDownload}
       >
         {isDownloading ? (
-          <><div className="dp-loading-spinner" style={{ width: 12, height: 12 }} /> {isLocal ? 'Applying...' : 'Downloading...'}</>
+          <><div className="dp-loading-spinner" style={{ width: 12, height: 12 }} /> {isLocal ? t('imageBrowser.applying') : t('imageBrowser.downloading')}</>
         ) : isLocal ? (
           <>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-            Use This
+            {t('imageBrowser.useThis')}
           </>
         ) : (
           <>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-            Download
+            {t('imageBrowser.download')}
           </>
         )}
       </button>
@@ -113,6 +115,7 @@ const LazyCard = memo(function LazyCard({ img, isDownloading, onPreview, onDownl
 
 /* ── Full-screen preview lightbox with navigation ── */
 function PreviewOverlay({ img, images, downloading, onClose, onNavigate, onDownload }) {
+  const { t } = useI18n();
   const [loaded, setLoaded] = useState(false);
   const idx = useMemo(() => images.findIndex(i => i.filePath === img.filePath), [img.filePath, images]);
 
@@ -155,7 +158,7 @@ function PreviewOverlay({ img, images, downloading, onClose, onNavigate, onDownl
           {!loaded && (
             <div className="ibm-preview-loading">
               <div className="dp-loading-spinner" />
-              <span>Loading full resolution...</span>
+              <span>{t('imageBrowser.loadingFullResolution')}</span>
             </div>
           )}
           <img
@@ -172,7 +175,7 @@ function PreviewOverlay({ img, images, downloading, onClose, onNavigate, onDownl
         <div className="ibm-preview-bar">
           <div className="ibm-preview-meta">
             {img.isLocal ? (
-              <span className="ibm-preview-res">{img.fileName || 'Local file'}</span>
+              <span className="ibm-preview-res">{img.fileName || t('imageBrowser.localFile')}</span>
             ) : (
               <>
                 <span className="ibm-preview-res">{img.width}×{img.height}</span>
@@ -188,16 +191,16 @@ function PreviewOverlay({ img, images, downloading, onClose, onNavigate, onDownl
             onClick={() => onDownload(img)}
           >
             {downloading === img.filePath ? (
-              <><div className="dp-loading-spinner" style={{ width: 14, height: 14 }} /> {img.isLocal ? 'Applying...' : 'Downloading...'}</>
+              <><div className="dp-loading-spinner" style={{ width: 14, height: 14 }} /> {img.isLocal ? t('imageBrowser.applying') : t('imageBrowser.downloading')}</>
             ) : img.isLocal ? (
               <>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                Use This Image
+                {t('imageBrowser.useThisImage')}
               </>
             ) : (
               <>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                Download &amp; Use
+                {t('imageBrowser.downloadAndUse')}
               </>
             )}
           </button>
@@ -212,6 +215,7 @@ const PAGE_SIZE = 48;
 
 export default function ImageBrowserModal({ tmdbId, mediaType, imageType, currentPath, onClose, onImageChanged }) {
   const { isOffline } = useOffline();
+  const { t, formatNumber } = useI18n();
   const [images, setImages] = useState([]);
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState(null);
@@ -231,7 +235,7 @@ export default function ImageBrowserModal({ tmdbId, mediaType, imageType, curren
       if (isOffline) {
         // Offline: only local images
         if (!window.api?.getLocalImages) {
-          setError('Local image browsing is not available');
+          setError(t('imageBrowser.localBrowsingUnavailable'));
           setLoading(false);
           return;
         }
@@ -239,10 +243,10 @@ export default function ImageBrowserModal({ tmdbId, mediaType, imageType, curren
         if (res?.success) {
           setImages(res[typeKey] || []);
           if ((res[typeKey] || []).length === 0) {
-            setError(`No downloaded ${typeKey} found locally`);
+            setError(typeKey === 'backdrops' ? t('imageBrowser.noneBackdropsOffline') : t('imageBrowser.nonePostersOffline'));
           }
         } else {
-          setError(res?.error || 'Failed to load local images');
+          setError(res?.error || t('imageBrowser.failedLocal'));
         }
       } else {
         // Online: load both local + TMDB
@@ -257,17 +261,17 @@ export default function ImageBrowserModal({ tmdbId, mediaType, imageType, curren
         setImages([...localImgs, ...tmdbImgs]);
 
         if (localImgs.length === 0 && tmdbImgs.length === 0) {
-          setError('No images found');
+          setError(t('imageBrowser.noImagesFound'));
         }
         if (!tmdbRes?.success && localImgs.length === 0) {
-          setError(tmdbRes?.error || 'Failed to load images');
+          setError(tmdbRes?.error || t('imageBrowser.failedLoad'));
         }
       }
     } catch (e) {
       setError(e.message);
     }
     setLoading(false);
-  }, [imageType, isOffline, mediaType, tmdbId]);
+  }, [imageType, isOffline, mediaType, t, tmdbId]);
 
   useEffect(() => {
     loadImages();
@@ -283,33 +287,33 @@ export default function ImageBrowserModal({ tmdbId, mediaType, imageType, curren
         const res = await window.api.setLocalImage(tmdbId, img.filePath, imageType);
         if (res?.success) {
           setAppliedPath(res.localPath);
-          setSuccessMsg(`${imageType === 'backdrop' ? 'Backdrop' : 'Poster'} switched!`);
+          setSuccessMsg(imageType === 'backdrop' ? t('imageBrowser.backdropSwitched') : t('imageBrowser.posterSwitched'));
           setPreviewImg(null);
           onImageChanged?.(res.localPath);
           window.dispatchEvent(new CustomEvent('media-data-changed'));
           setTimeout(() => setSuccessMsg(null), 3000);
         } else {
-          setError(res?.error || 'Failed to switch image');
+          setError(res?.error || t('imageBrowser.failedSwitch'));
         }
       } else {
         const url = imageType === 'backdrop' ? img.originalUrl : img.fullUrl;
         const res = await window.api.downloadTmdbImage(tmdbId, url, imageType);
         if (res.success) {
           setAppliedPath(res.localPath);
-          setSuccessMsg(`${imageType === 'backdrop' ? 'Backdrop' : 'Poster'} updated successfully!`);
+          setSuccessMsg(imageType === 'backdrop' ? t('imageBrowser.backdropUpdated') : t('imageBrowser.posterUpdated'));
           setPreviewImg(null);
           onImageChanged?.(res.localPath);
           window.dispatchEvent(new CustomEvent('media-data-changed'));
           setTimeout(() => setSuccessMsg(null), 3000);
         } else {
-          setError(res.error || 'Download failed');
+          setError(res.error || t('imageBrowser.downloadFailed'));
         }
       }
     } catch (e) {
       setError(e.message);
     }
     setDownloading(null);
-  }, [imageType, tmdbId, onImageChanged]);
+  }, [imageType, tmdbId, onImageChanged, t]);
 
   const isLandscape = imageType === 'backdrop';
 
@@ -331,9 +335,9 @@ export default function ImageBrowserModal({ tmdbId, mediaType, imageType, curren
       <div className="ibm-modal" onClick={e => e.stopPropagation()}>
         <div className="ibm-header">
           <h2 className="ibm-title">
-            {isLandscape ? 'Backdrops' : 'Posters'}
+            {isLandscape ? t('imageBrowser.backdrops') : t('imageBrowser.posters')}
             {isOffline && <span className="ibm-offline-badge">Offline</span>}
-            {images.length > 0 && <span className="ibm-count">{images.length} total</span>}
+            {images.length > 0 && <span className="ibm-count">{t('imageBrowser.total', { count: formatNumber(images.length) })}</span>}
           </h2>
           <button className="ibm-close" onClick={onClose}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
@@ -342,7 +346,7 @@ export default function ImageBrowserModal({ tmdbId, mediaType, imageType, curren
 
         {(currentPath || appliedPath) && (
           <div className="ibm-current">
-            <span className="ibm-current-label">Current</span>
+            <span className="ibm-current-label">{t('imageBrowser.current')}</span>
             <img
               src={`file:///${(appliedPath || currentPath).replace(/\\/g, '/')}`}
               alt="Current"
@@ -364,7 +368,7 @@ export default function ImageBrowserModal({ tmdbId, mediaType, imageType, curren
         {loading ? (
           <div className="ibm-loading">
             <div className="dp-loading-spinner" />
-            <span>{isOffline ? 'Loading local images...' : 'Fetching images from TMDB...'}</span>
+            <span>{isOffline ? t('imageBrowser.loadingLocal') : t('imageBrowser.fetchingTmdb')}</span>
           </div>
         ) : (
           <div className="ibm-scroll-area" ref={gridRef}>
@@ -373,8 +377,8 @@ export default function ImageBrowserModal({ tmdbId, mediaType, imageType, curren
               <>
                 <div className="ibm-section-header">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                  Downloaded
-                  <span className="ibm-section-count">{localImages.length}</span>
+                  {t('common.downloaded')}
+                  <span className="ibm-section-count">{formatNumber(localImages.length)}</span>
                 </div>
                 <div className={`ibm-grid ${isLandscape ? 'ibm-grid-landscape' : ''}`}>
                   {localImages.map((img) => (
@@ -396,8 +400,8 @@ export default function ImageBrowserModal({ tmdbId, mediaType, imageType, curren
                 {!isOffline && (
                   <div className="ibm-section-header">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2"/><path d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10A15.3 15.3 0 0112 2z" stroke="currentColor" strokeWidth="2"/></svg>
-                    Available on TMDB
-                    <span className="ibm-section-count">{tmdbImages.length}</span>
+                    {t('imageBrowser.availableOnTmdb')}
+                    <span className="ibm-section-count">{formatNumber(tmdbImages.length)}</span>
                   </div>
                 )}
                 <div className={`ibm-grid ${isLandscape ? 'ibm-grid-landscape' : ''}`}>
@@ -415,12 +419,12 @@ export default function ImageBrowserModal({ tmdbId, mediaType, imageType, curren
             )}
 
             {images.length === 0 && (
-              <div className="ibm-empty">No {isLandscape ? 'backdrops' : 'posters'} {isOffline ? 'downloaded locally' : 'found'}</div>
+              <div className="ibm-empty">{isLandscape ? (isOffline ? t('imageBrowser.noneBackdropsOffline') : t('imageBrowser.noneBackdrops')) : (isOffline ? t('imageBrowser.nonePostersOffline') : t('imageBrowser.nonePosters'))}</div>
             )}
             {hasMore && (
               <div className="ibm-load-more">
                 <button className="ibm-load-more-btn" onClick={handleLoadMore}>
-                  Load More ({tmdbImages.length - visibleTmdb.length} remaining)
+                  {t('imageBrowser.loadMore', { count: formatNumber(tmdbImages.length - visibleTmdb.length) })}
                 </button>
               </div>
             )}

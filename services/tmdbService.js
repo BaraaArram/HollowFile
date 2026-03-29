@@ -4,11 +4,176 @@ const { computeScore, getSimilarity, computeEpisodeScore } = require('../utils/s
 const { api: apiLogger, download: downloadLogger, result: resultLogger } = require('../logger.js');
 
 const MAX_YEAR_DIFFERENCE = 2;
+const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
+const TMDB_LOCALIZED_LANGUAGES = {
+  ar: 'ar-SA'
+};
+
+function hasArabicCharacters(value) {
+  return /[\u0600-\u06FF]/.test(value || '');
+}
+
+function hasMeaningfulLocalizedValue(localizedValue, baseValue, localeCode) {
+  if (typeof localizedValue !== 'string' || localizedValue.trim().length === 0) {
+    return false;
+  }
+
+  if (localeCode === 'ar' && hasArabicCharacters(localizedValue)) {
+    return true;
+  }
+
+  const normalizedLocalized = localizedValue.trim();
+  const normalizedBase = typeof baseValue === 'string' ? baseValue.trim() : '';
+  return normalizedLocalized.length > 0 && normalizedLocalized !== normalizedBase;
+}
+
+function getLocalizedFieldStatus(localizedResource, baseResource, localeCode) {
+  const localizedTitle = localizedResource?.title || localizedResource?.name || '';
+  const baseTitle = baseResource?.title || baseResource?.name || '';
+  const localizedOverview = localizedResource?.overview || '';
+  const baseOverview = baseResource?.overview || '';
+
+  return {
+    title: hasMeaningfulLocalizedValue(localizedTitle, baseTitle, localeCode),
+    overview: hasMeaningfulLocalizedValue(localizedOverview, baseOverview, localeCode),
+  };
+}
+
+function getComparableText(resource = {}) {
+  return [
+    resource.title,
+    resource.name,
+    resource.overview,
+    resource.tagline,
+    resource.belongs_to_collection?.name,
+    ...(Array.isArray(resource.genres) ? resource.genres.map((genre) => genre?.name) : []),
+  ].filter((value) => typeof value === 'string' && value.trim().length > 0);
+}
+
+function hasLocalizedData(localizedResource, baseResource, localeCode) {
+  if (!localizedResource || typeof localizedResource !== 'object') {
+    return false;
+  }
+
+  const localizedTexts = getComparableText(localizedResource);
+  if (localizedTexts.length === 0) {
+    return false;
+  }
+
+  if (localeCode === 'ar' && localizedTexts.some(hasArabicCharacters)) {
+    return true;
+  }
+
+  const baseTexts = new Set(getComparableText(baseResource).map((text) => text.trim()));
+  return localizedTexts.some((text) => !baseTexts.has(text.trim()));
+}
+
+function buildTMDBUrl(endpoint, params = {}) {
+  const query = new URLSearchParams({
+    api_key: process.env.TMDB_API_KEY,
+    ...params,
+  });
+
+  return `${TMDB_BASE_URL}/${endpoint.replace(/^\/+/, '')}?${query.toString()}`;
+}
+
+async function fetchTMDBResource(endpoint, params = {}) {
+  const response = await axios.get(buildTMDBUrl(endpoint, params));
+  return response.data;
+}
+
+async function fetchLocalizedTMDBResource(endpoint, params = {}, locales = TMDB_LOCALIZED_LANGUAGES) {
+  const localizedEntries = await Promise.all(
+    Object.entries(locales).map(async ([localeCode, language]) => {
+      try {
+        const data = await fetchTMDBResource(endpoint, { ...params, language });
+        return [localeCode, data];
+      } catch (error) {
+        apiLogger.warn(`Localized TMDB fetch failed`, {
+          endpoint,
+          localeCode,
+          language,
+          error: error.message,
+        });
+        return [localeCode, null];
+      }
+    })
+  );
+
+  return localizedEntries.reduce((accumulator, [localeCode, data]) => {
+    if (data) {
+      accumulator[localeCode] = data;
+    }
+    return accumulator;
+  }, {});
+}
+
+async function fetchLocalizedTMDBResourceWithStatus(endpoint, params = {}, baseResource = null, locales = TMDB_LOCALIZED_LANGUAGES) {
+  const checkedAt = new Date().toISOString();
+  const entries = await Promise.all(
+    Object.entries(locales).map(async ([localeCode, language]) => {
+      try {
+        const data = await fetchTMDBResource(endpoint, { ...params, language });
+        const fields = getLocalizedFieldStatus(data, baseResource, localeCode);
+        return {
+          localeCode,
+          data,
+          status: {
+            locale: localeCode,
+            language,
+            checked: true,
+            requestSucceeded: true,
+            found: fields.title || fields.overview || hasLocalizedData(data, baseResource, localeCode),
+            fields,
+            checkedAt,
+          },
+        };
+      } catch (error) {
+        apiLogger.warn(`Localized TMDB fetch failed`, {
+          endpoint,
+          localeCode,
+          language,
+          error: error.message,
+        });
+
+        return {
+          localeCode,
+          data: null,
+          status: {
+            locale: localeCode,
+            language,
+            checked: true,
+            requestSucceeded: false,
+            found: false,
+            fields: { title: false, overview: false },
+            checkedAt,
+            error: error.message,
+          },
+        };
+      }
+    })
+  );
+
+  const localized = {};
+  const checks = {};
+
+  entries.forEach(({ localeCode, data, status }) => {
+    checks[localeCode] = status;
+    if (data) {
+      localized[localeCode] = data;
+    }
+  });
+
+  return { localized, checks };
+}
 
 async function searchTMDB(query, expectedYear, mediaType = 'multi') {
   // TEMP: Log the API key and URL for debugging
   console.log('TMDB API KEY:', process.env.TMDB_API_KEY);
-  const url = `https://api.themoviedb.org/3/search/${mediaType}?api_key=${process.env.TMDB_API_KEY}&query=${encodeURIComponent(query)}&year=${expectedYear}`;
+  const url = buildTMDBUrl(`search/${mediaType}`, {
+    query,
+    year: expectedYear,
+  });
   console.log('TMDB URL:', url);
   
   apiLogger.info(`Starting TMDB search`, { 
@@ -212,7 +377,7 @@ function findBestMatch(scoredResults, query) {
 // New: Search for TV show by name, then fetch season/episode details if needed
 async function searchTVShowAndEpisode(showName, season, episode) {
   // 1. Search for the TV show by name only
-  const url = `https://api.themoviedb.org/3/search/tv?api_key=${process.env.TMDB_API_KEY}&query=${encodeURIComponent(showName)}`;
+  const url = buildTMDBUrl('search/tv', { query: showName });
   apiLogger.info(`Searching TMDB for TV show`, { showName, url: url.replace(process.env.TMDB_API_KEY, '***') });
   let showId = null;
   let showResult = null;
@@ -234,7 +399,7 @@ async function searchTVShowAndEpisode(showName, season, episode) {
 
   // 2. If season and episode are provided, fetch episode details
   if (showId && season && episode) {
-    const epUrl = `https://api.themoviedb.org/3/tv/${showId}/season/${season}/episode/${episode}?api_key=${process.env.TMDB_API_KEY}`;
+    const epUrl = buildTMDBUrl(`tv/${showId}/season/${season}/episode/${episode}`);
     try {
       const epResponse = await axios.get(epUrl);
       return {
@@ -253,7 +418,7 @@ async function searchTVShowAndEpisode(showName, season, episode) {
 // Fetch trailer/video data from TMDB
 async function fetchVideos(tmdbId, mediaType = 'movie') {
   const type = mediaType === 'tv' ? 'tv' : 'movie';
-  const url = `https://api.themoviedb.org/3/${type}/${tmdbId}/videos?api_key=${process.env.TMDB_API_KEY}`;
+  const url = buildTMDBUrl(`${type}/${tmdbId}/videos`);
   apiLogger.info(`Fetching videos for ${type}/${tmdbId}`);
   try {
     const response = await axios.get(url);
@@ -319,6 +484,10 @@ function normalizeTMDBResult(result) {
 }
 
 module.exports = {
+  buildTMDBUrl,
+  fetchTMDBResource,
+  fetchLocalizedTMDBResource,
+  fetchLocalizedTMDBResourceWithStatus,
   searchTMDB,
   scoreResults,
   findBestMatch,

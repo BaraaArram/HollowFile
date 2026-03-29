@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useI18n } from '../contexts/i18nState';
 
 // Global cache-bust revision: incremented whenever media files change
 let _cacheBustRev = Date.now();
@@ -15,6 +16,7 @@ export default function LazyImage({
   onError,
   ...props 
 }) {
+  const { t } = useI18n();
   const [isLoaded, setIsLoaded] = useState(false);
   const [hasError, setHasError] = useState(false);
   const [isInView, setIsInView] = useState(false);
@@ -105,7 +107,7 @@ export default function LazyImage({
         }}
         {...props}
       >
-        {errorPlaceholder}
+        {typeof errorPlaceholder === 'string' && errorPlaceholder === 'Error' ? t('common.error') : errorPlaceholder}
       </div>
     );
   }
@@ -142,7 +144,7 @@ export default function LazyImage({
             zIndex: 1
           }}
         >
-          {placeholder}
+          {typeof placeholder === 'string' && placeholder === 'Loading...' ? t('common.loading') : placeholder}
         </div>
       )}
 
@@ -167,7 +169,7 @@ export default function LazyImage({
             zIndex: 1
           }}
         >
-          {errorPlaceholder}
+          {typeof errorPlaceholder === 'string' && errorPlaceholder === 'Error' ? t('common.error') : errorPlaceholder}
         </div>
       )}
 
