@@ -1,6 +1,6 @@
 const { api: apiLogger, download: downloadLogger, result: resultLogger } = require('./logger.js');
 const  parseFileName  = require('./utils/nameParser');
-const { searchTMDB, scoreResults, findBestMatch, searchTVShowAndEpisode, normalizeTMDBResult } = require('./services/tmdbService');
+const { searchTMDB, scoreResults, findBestMatch, searchTVShowAndEpisode, normalizeTMDBResult, fetchVideos } = require('./services/tmdbService');
 const { readResults, findInResults } = require('./services/resultsService');
 const { handleMatchedResult } = require('./handlers/resultHandler');
 const { emitScanProgress } = require('./services/scanProgressService');
@@ -102,6 +102,13 @@ async function searchVideoType(originalName, parsedTitle, dirPath, progressCallb
           credits = await creditsRes.json();
         }
       } catch (e) { credits = null; }
+      // Fetch trailer videos
+      let videos = [];
+      try {
+        if (tvResult.show.id) {
+          videos = await fetchVideos(tvResult.show.id, 'tv');
+        }
+      } catch (e) { videos = []; }
       // Use handleMatchedResult to get local poster path in final
       const info = await handleMatchedResult(
         originalName,
@@ -109,7 +116,7 @@ async function searchVideoType(originalName, parsedTitle, dirPath, progressCallb
         (tvResult.show.first_air_date || '').slice(0, 4),
         dirPath,
         false,
-        { show: tvResult.show, episode: tvResult.episode, credits },
+        { show: tvResult.show, episode: tvResult.episode, credits, videos },
         downloadCastImages
       );
       // Always set info.final to the returned finalWithPosterPath
@@ -277,13 +284,20 @@ async function searchVideoType(originalName, parsedTitle, dirPath, progressCallb
         credits = await creditsRes.json();
       }
     } catch (e) { credits = null; }
+    // Fetch trailer videos
+    let videos = [];
+    try {
+      if (bestOverall.id) {
+        videos = await fetchVideos(bestOverall.id, 'movie');
+      }
+    } catch (e) { videos = []; }
     info = await handleMatchedResult(
       originalName,
       normalizeTMDBResult(bestOverall),
       bestMatchObj.resultYear,
       dirPath,
       isMismatch,
-      { movie: fullDetails || bestOverall, credits },
+      { movie: fullDetails || bestOverall, credits, videos },
       downloadCastImages
     );
     info.type = bestType;

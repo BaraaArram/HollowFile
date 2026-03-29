@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import LazyImage from './LazyImage.jsx';
 
 function getRating(file) {
@@ -23,8 +23,26 @@ function getRuntime(file) {
   return file.final?.runtime || file.fullApiData?.movie?.runtime || null;
 }
 
+function MiniRating({ rating }) {
+  const pct = (rating / 10) * 100;
+  const r = 16;
+  const circ = 2 * Math.PI * r;
+  const offset = circ - (pct / 100) * circ;
+  const color = rating >= 7 ? '#22d3ee' : rating >= 5 ? '#fbbf24' : '#ef4444';
+  return (
+    <div className="mc-rating">
+      <svg width="38" height="38" viewBox="0 0 38 38">
+        <circle cx="19" cy="19" r={r} fill="rgba(0,0,0,0.65)" stroke="rgba(255,255,255,0.08)" strokeWidth="3" />
+        <circle cx="19" cy="19" r={r} fill="none" stroke={color} strokeWidth="3"
+          strokeLinecap="round" strokeDasharray={circ} strokeDashoffset={offset}
+          style={{ transform: 'rotate(-90deg)', transformOrigin: 'center' }} />
+      </svg>
+      <span className="mc-rating-text" style={{ color }}>{rating.toFixed(1)}</span>
+    </div>
+  );
+}
+
 export default function MovieCard({ file, onClick, viewMode = 'grid' }) {
-  const [isHovered, setIsHovered] = useState(false);
   const poster = file.final?.poster;
   const title = file.final?.title || file.parsing?.cleanTitle || file.filename;
   const year = file.final?.year || file.parsing?.year || '';
@@ -36,289 +54,46 @@ export default function MovieCard({ file, onClick, viewMode = 'grid' }) {
 
   if (viewMode === 'list') {
     return (
-      <div
-        className="hk-card movie-card-list"
-        style={{ 
-          display: 'flex', 
-          alignItems: 'center', 
-          gap: 20, 
-          padding: 16, 
-          cursor: 'pointer', 
-          transition: 'all 0.2s ease',
-          background: isHovered ? '#2a3155' : '#232849cc',
-          borderRadius: 12,
-          border: isHovered ? '1px solid var(--hk-accent)' : '1px solid transparent'
-        }}
-        onClick={onClick}
-        onMouseEnter={() => setIsHovered(true)}
-        onMouseLeave={() => setIsHovered(false)}
-        tabIndex={0}
+      <div className="mc mc-list" onClick={onClick} tabIndex={0}
         onKeyDown={e => { if ((e.key === 'Enter' || e.key === ' ') && onClick) onClick(); }}
-        aria-label={`View details for ${title}`}
-      >
-        {/* Poster */}
-        <div style={{ 
-          flex: '0 0 80px', 
-          width: 80, 
-          height: 120, 
-          borderRadius: 8, 
-          overflow: 'hidden',
-          boxShadow: '0 4px 12px #0004'
-        }}>
-          <LazyImage
-            src={poster}
-            alt={title}
-            placeholder="Loading..."
-            errorPlaceholder="No Poster"
-            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-          />
+        aria-label={`View details for ${title}`}>
+        <div className="mc-list-poster">
+          <LazyImage src={poster} alt={title} placeholder="" errorPlaceholder="No Poster"
+            style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
         </div>
-
-        {/* Content */}
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ 
-            display: 'flex', 
-            alignItems: 'center', 
-            gap: 12, 
-            marginBottom: 8,
-            flexWrap: 'wrap'
-          }}>
-            <div style={{ 
-              fontWeight: 800, 
-              fontSize: 18, 
-              color: isHovered ? 'var(--hk-accent)' : '#fff',
-              transition: 'color 0.2s ease'
-            }}>
-              {title}
-            </div>
-            {year && (
-              <div style={{ 
-                color: 'var(--hk-text-muted)', 
-                fontSize: 16,
-                fontWeight: 500
-              }}>
-                ({year})
-              </div>
-            )}
-            {collection && (
-              <div style={{ 
-                background: '#1c2038', 
-                color: 'var(--hk-accent)', 
-                padding: '4px 8px', 
-                borderRadius: 6,
-                fontSize: 12,
-                fontWeight: 600
-              }}>
-                {collection}
-              </div>
-            )}
+        <div className="mc-list-body">
+          <div className="mc-list-top">
+            <span className="mc-list-title">{title}</span>
+            {year && <span className="mc-list-year">({year})</span>}
           </div>
-
-          {/* Overview */}
-          {overview && (
-            <div style={{ 
-              color: '#b3b3b3', 
-              fontSize: 14, 
-              lineHeight: 1.4,
-              marginBottom: 8,
-              display: '-webkit-box',
-              WebkitLineClamp: 2,
-              WebkitBoxOrient: 'vertical',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis'
-            }}>
-              {overview}
-            </div>
-          )}
-
-          {/* Stats */}
-          <div style={{ 
-            display: 'flex', 
-            alignItems: 'center', 
-            gap: 12,
-            flexWrap: 'wrap'
-          }}>
-            {rating && (
-              <div style={{ 
-                display: 'flex', 
-                alignItems: 'center', 
-                gap: 4,
-                color: '#ffe066',
-                fontSize: 14,
-                fontWeight: 600
-              }}>
-                <span>★</span> {rating.toFixed(1)}
-              </div>
-            )}
-            {runtime && (
-              <div style={{ 
-                color: 'var(--hk-text-muted)', 
-                fontSize: 14,
-                fontWeight: 500
-              }}>
-                {Math.floor(runtime / 60)}h {runtime % 60}m
-              </div>
-            )}
-            {resolution && (
-              <div style={{ 
-                background: '#1c2038', 
-                color: 'var(--hk-accent)', 
-                padding: '2px 6px', 
-                borderRadius: 4,
-                fontSize: 12,
-                fontWeight: 600
-              }}>
-                {resolution}
-              </div>
-            )}
+          <div className="mc-list-meta">
+            {rating && <MiniRating rating={rating} />}
+            {runtime && <span className="mc-list-runtime">{Math.floor(runtime / 60)}h {runtime % 60}m</span>}
+            {resolution && <span className="mc-badge">{resolution}</span>}
+            {collection && <span className="mc-badge mc-badge-collection">{collection}</span>}
           </div>
+          {overview && <div className="mc-list-overview">{overview}</div>}
         </div>
-
-        {/* Arrow indicator */}
-        {isHovered && (
-          <div style={{
-            color: 'var(--hk-accent)',
-            fontSize: 18,
-            fontWeight: 700,
-            marginLeft: 12
-          }}>
-            →
-          </div>
-        )}
       </div>
     );
   }
 
-  // Grid view (original)
   return (
-    <div
-      className="hk-card movie-card"
-      style={{ 
-        minHeight: 320, 
-        display: 'flex', 
-        flexDirection: 'column', 
-        alignItems: 'center', 
-        justifyContent: 'flex-start', 
-        padding: 0, 
-        position: 'relative', 
-        overflow: 'hidden', 
-        cursor: 'pointer', 
-        transition: 'all 0.2s ease',
-        transform: isHovered ? 'translateY(-4px)' : 'translateY(0)',
-        boxShadow: isHovered ? '0 8px 24px #23284966' : '0 4px 16px #23284933'
-      }}
-      onClick={onClick}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-      tabIndex={0}
+    <div className="mc mc-grid" onClick={onClick} tabIndex={0}
       onKeyDown={e => { if ((e.key === 'Enter' || e.key === ' ') && onClick) onClick(); }}
-      aria-label={`View details for ${title}`}
-    >
-      <div style={{ 
-        width: '100%', 
-        aspectRatio: '2/3', 
-        background: '#232849', 
-        display: 'flex', 
-        alignItems: 'center', 
-        justifyContent: 'center', 
-        borderRadius: '14px 14px 0 0', 
-        overflow: 'hidden', 
-        boxShadow: isHovered ? '0 8px 24px #7e8ee688' : '0 4px 16px #7e8ee655', 
-        position: 'relative',
-        transition: 'all 0.2s ease'
-      }}>
-        {collection && (
-          <div style={{ 
-            position: 'absolute', 
-            top: 10, 
-            left: 10, 
-            background: 'var(--hk-accent)', 
-            color: '#232849', 
-            borderRadius: 8, 
-            padding: '2px 12px', 
-            fontWeight: 700, 
-            fontSize: 13, 
-            boxShadow: '0 0 8px #7e8ee655', 
-            zIndex: 2, 
-            maxWidth: 120, 
-            overflow: 'hidden', 
-            textOverflow: 'ellipsis', 
-            whiteSpace: 'nowrap' 
-          }} 
-          title={collection}>
-            {collection}
-          </div>
-        )}
-        <LazyImage
-          src={poster}
-          alt={title}
-          placeholder="Loading..."
-          errorPlaceholder="No Poster"
-          style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 0 }}
-        />
-        {rating && (
-          <div style={{ 
-            position: 'absolute', 
-            top: 10, 
-            right: 10, 
-            background: '#232849ee', 
-            color: 'var(--hk-accent)', 
-            borderRadius: 8, 
-            padding: '2px 10px', 
-            fontWeight: 700, 
-            fontSize: 15, 
-            boxShadow: '0 0 8px #7e8ee655', 
-            display: 'flex', 
-            alignItems: 'center', 
-            gap: 4 
-          }}>
-            <span style={{ color: '#ffe066', fontSize: 16, marginRight: 3 }}>★</span> {rating.toFixed(1)}
-          </div>
-        )}
-        {resolution && (
-          <div style={{ 
-            position: 'absolute', 
-            bottom: 10, 
-            right: 10, 
-            background: '#232849ee', 
-            color: 'var(--hk-accent)', 
-            borderRadius: 8, 
-            padding: '2px 10px', 
-            fontWeight: 700, 
-            fontSize: 13, 
-            boxShadow: '0 0 8px #7e8ee655', 
-            display: 'flex', 
-            alignItems: 'center', 
-            gap: 4 
-          }}>
-            {resolution}
-          </div>
-        )}
+      aria-label={`View details for ${title}`}>
+      <div className="mc-poster">
+        <LazyImage src={poster} alt={title} placeholder="" errorPlaceholder="No Poster"
+          style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+        <div className="mc-poster-overlay" />
+        {rating && <div className="mc-rating-badge"><MiniRating rating={rating} /></div>}
+        {collection && <div className="mc-collection-badge" title={collection}>{collection}</div>}
+        {resolution && <div className="mc-res-badge">{resolution}</div>}
       </div>
-      <div style={{ 
-        marginTop: 12, 
-        textAlign: 'center', 
-        width: '100%', 
-        padding: '0 12px 12px 12px' 
-      }}>
-        <div style={{ 
-          fontWeight: 800, 
-          fontSize: 18, 
-          color: isHovered ? 'var(--hk-accent)' : 'var(--hk-accent)', 
-          textShadow: 'var(--hk-accent-glow)',
-          transition: 'color 0.2s ease',
-          lineHeight: 1.2
-        }}>
-          {title}
-        </div>
-        <div style={{ 
-          color: 'var(--hk-text-muted)', 
-          fontSize: 15, 
-          marginTop: 4 
-        }}>
-          {year}
-        </div>
+      <div className="mc-info">
+        <div className="mc-title">{title}</div>
+        <div className="mc-year">{year}</div>
       </div>
     </div>
   );
-} 
+}

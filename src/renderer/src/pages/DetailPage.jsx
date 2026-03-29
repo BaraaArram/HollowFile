@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import LazyImage from '../components/LazyImage.jsx';
-
-console.log('!!! LOADED NEW DETAIL PAGE !!!');
+import ImageBrowserModal from '../components/ImageBrowserModal';
+import { useOffline } from '../contexts/offlineContextState';
 
 function getResolution(file) {
   const str = file.filename + ' ' + file.path;
@@ -27,16 +27,47 @@ function formatCurrency(amount) {
   }).format(amount);
 }
 
+function RatingRing({ rating, size = 64 }) {
+  const pct = (rating / 10) * 100;
+  const r = (size - 8) / 2;
+  const circ = 2 * Math.PI * r;
+  const offset = circ - (pct / 100) * circ;
+  const color = rating >= 7 ? '#22d3ee' : rating >= 5 ? '#fbbf24' : '#ef4444';
+  return (
+    <div className="dp-rating-ring" title={`${Number(rating).toFixed(1)} / 10`}>
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="5" />
+        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={color} strokeWidth="5"
+          strokeLinecap="round" strokeDasharray={circ} strokeDashoffset={offset}
+          style={{ transform: 'rotate(-90deg)', transformOrigin: 'center', transition: 'stroke-dashoffset 1s ease' }} />
+      </svg>
+      <span className="dp-rating-ring-text" style={{ color }}>{Number(rating).toFixed(1)}</span>
+    </div>
+  );
+}
+
 export default function DetailPage() {
-  const { type, id } = useParams();
+  const { id } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
+  const { isOffline } = useOffline();
   const [movie, setMovie] = useState(location.state?.movie || null);
   const [loading, setLoading] = useState(!location.state?.movie);
   const [error, setError] = useState(null);
   const [castPeople, setCastPeople] = useState([]);
   const [crewPeople, setCrewPeople] = useState([]);
   const [activeTab, setActiveTab] = useState('overview');
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [refreshMessage, setRefreshMessage] = useState('');
+  const [trailers, setTrailers] = useState([]);
+  const [trailersLoading, setTrailersLoading] = useState(false);
+  const [showTrailers] = useState(() => localStorage.getItem('showTrailers') === 'true');
+  const [activeTrailer, setActiveTrailer] = useState(null);
+  const [trailerStatuses, setTrailerStatuses] = useState({});
+  const [downloadingTrailers, setDownloadingTrailers] = useState({});
+  const [movieStorage, setMovieStorage] = useState(null);
+  const [deletingItem, setDeletingItem] = useState(null);
+  const [imageBrowser, setImageBrowser] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -63,7 +94,7 @@ export default function DetailPage() {
           setLoading(false);
           setError('No scan results available.');
         }
-      }).catch(e => {
+      }).catch(() => {
         setLoading(false);
         setError('Failed to load scan results.');
       });
@@ -73,59 +104,224 @@ export default function DetailPage() {
     return () => { cancelled = true; };
   }, [id, movie]);
 
-  // Load local cast/crew info
+  // Reload when images are changed via ImageBrowserModal
+  useEffect(() => {
+    const handler = () => {
+      if (window.api?.getLastScanResults) {
+        window.api.getLastScanResults().then(results => {
+          if (Array.isArray(results)) {
+            const found = results.find(f => {
+              const ids = [
+                f.final?.id,
+                f.fullApiData?.movie?.id,
+                f.fullApiData?.show?.id,
+                f.id,
+                f.filename
+              ].map(x => String(x)).filter(Boolean);
+              return ids.includes(id);
+            });
+            if (found) setMovie(found);
+          }
+        });
+      }
+    };
+    window.addEventListener('media-data-changed', handler);
+    return () => window.removeEventListener('media-data-changed', handler);
+  }, [id]);
+
   useEffect(() => {
     if (!movie || !window.api || !window.api.readPersonData) return;
     let cancelled = false;
     async function loadPeople() {
-      // Cast
       const castIds = movie.castIds || (movie.fullApiData?.credits?.cast?.map(c => c.id).filter(Boolean) || []);
       const crewIds = movie.crewIds || (movie.fullApiData?.credits?.crew?.map(c => c.id).filter(Boolean) || []);
       const cast = [];
-      for (const id of castIds.slice(0, 12)) {
-        try {
-          const person = await window.api.readPersonData(id);
-          if (person) cast.push(person);
-        } catch {}
+      for (const pid of castIds.slice(0, 12)) {
+        try { const p = await window.api.readPersonData(pid); if (p) cast.push(p); } catch { void 0; }
       }
       const crew = [];
-      for (const id of crewIds.slice(0, 12)) {
-        try {
-          const person = await window.api.readPersonData(id);
-          if (person) crew.push(person);
-        } catch {}
+      for (const pid of crewIds.slice(0, 12)) {
+        try { const p = await window.api.readPersonData(pid); if (p) crew.push(p); } catch { void 0; }
       }
-      if (!cancelled) {
-        setCastPeople(cast);
-        setCrewPeople(crew);
-      }
+      if (!cancelled) { setCastPeople(cast); setCrewPeople(crew); }
     }
     loadPeople();
     return () => { cancelled = true; };
   }, [movie]);
 
+  // Load trailers
+  useEffect(() => {
+    if (!movie || !showTrailers) return;
+    let cancelled = false;
+    const storedVideos = movie.fullApiData?.videos;
+    if (storedVideos && storedVideos.length > 0) {
+      setTrailers(storedVideos);
+      return;
+    }
+    // Skip API call when offline — only show stored videos
+    if (isOffline) return;
+    const tmdbId = movie.final?.id || movie.fullApiData?.movie?.id || movie.fullApiData?.show?.id;
+    const mediaType = (movie.type === 'tv' || movie.parsing?.isTV) ? 'tv' : 'movie';
+    if (!tmdbId || !window.api?.getTrailers) return;
+    setTrailersLoading(true);
+    window.api.getTrailers(tmdbId, mediaType).then(res => {
+      if (cancelled) return;
+      if (res?.success && res.videos?.length > 0) {
+        setTrailers(res.videos);
+      }
+    }).catch(() => {}).finally(() => {
+      if (!cancelled) setTrailersLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [movie, showTrailers, isOffline]);
+
+  // Check which trailers are already downloaded
+  useEffect(() => {
+    if (trailers.length === 0 || !window.api?.getTrailerStatuses) return;
+    const keys = trailers.map(t => t.key);
+    window.api.getTrailerStatuses(keys).then(res => {
+      if (res?.success) {
+        const map = {};
+        res.statuses.forEach(s => { map[s.key] = s; });
+        setTrailerStatuses(map);
+      }
+    });
+  }, [trailers]);
+
+  // Listen for trailer download progress
+  useEffect(() => {
+    if (!window.api?.onTrailerDownloadProgress) return;
+    const unsub = window.api.onTrailerDownloadProgress(({ videoKey, percent }) => {
+      setDownloadingTrailers(prev => ({ ...prev, [videoKey]: percent }));
+    });
+    return unsub;
+  }, []);
+
+  const handleDownloadTrailer = async (videoKey) => {
+    if (isOffline) {
+      setError('Cannot download trailers while offline');
+      setTimeout(() => setError(null), 3000);
+      return;
+    }
+    if (downloadingTrailers[videoKey] !== undefined) return;
+    setDownloadingTrailers(prev => ({ ...prev, [videoKey]: 0 }));
+    try {
+      const res = await window.api.downloadTrailer(videoKey);
+      if (res?.success) {
+        setTrailerStatuses(prev => ({ ...prev, [videoKey]: { key: videoKey, downloaded: true, path: res.path } }));
+        setActiveTrailer(videoKey);
+      }
+    } catch {
+      void 0;
+    }
+    setDownloadingTrailers(prev => {
+      const next = { ...prev };
+      delete next[videoKey];
+      return next;
+    });
+  };
+
+  const handlePlayTrailer = (videoKey) => {
+    const status = trailerStatuses[videoKey];
+    if (status?.downloaded) {
+      setActiveTrailer(videoKey);
+    } else {
+      handleDownloadTrailer(videoKey);
+    }
+  };
+
+  const handleRefresh = async () => {
+    if (!window.api || !window.api.refreshMovieData) return;
+    setIsRefreshing(true);
+    setError(null);
+    setRefreshMessage('');
+    try {
+      const identifier = movie.final?.id || movie.filename || movie.id;
+      const res = await window.api.refreshMovieData(identifier);
+      if (res?.success && res.result) {
+        setMovie(res.result);
+        setRefreshMessage('Data refreshed from TMDB.');
+        setCastPeople([]);
+        setCrewPeople([]);
+      } else {
+        setError(res.error || 'Failed to refresh data.');
+      }
+    } catch (err) {
+      setError(err.message || 'Refresh failed.');
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
+  const formatBytes = (bytes) => {
+    if (!bytes || bytes === 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(1024));
+    return (bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+  };
+
+  const loadMovieStorage = React.useCallback(async () => {
+    const movieId = movie?.final?.id || movie?.id;
+    if (!movieId || !window.api?.getMovieStorage) {
+      setMovieStorage({ success: true, items: [], total: 0 });
+      return;
+    }
+    try {
+      const info = await window.api.getMovieStorage(movieId);
+      if (info.success) setMovieStorage(info);
+      else setMovieStorage({ success: true, items: [], total: 0 });
+    } catch {
+      setMovieStorage({ success: true, items: [], total: 0 });
+    }
+  }, [movie]);
+
+  const handleDeleteStorageItem = async (item) => {
+    const key = item.path || item.type;
+    if (deletingItem !== key) { setDeletingItem(key); return; }
+    setDeletingItem(null);
+    await window.api.deleteStorageItem({ type: item.type, path: item.path, videoKey: item.videoKey });
+    loadMovieStorage();
+  };
+
+  useEffect(() => {
+    if (movie && activeTab === 'details') loadMovieStorage();
+  }, [activeTab, loadMovieStorage, movie]);
+
   if (loading) {
-    return (
-      <div className="hk-modal" style={{ marginTop: 80, textAlign: 'center' }}>
-        <button className="hk-modal-close" onClick={() => navigate(-1)}>&times;</button>
-        <div style={{ fontSize: 20, color: 'var(--hk-accent)' }}>Loading...</div>
-      </div>
-    );
+    return <div className="dp-loading"><div className="dp-loading-spinner" /><span>Loading...</span></div>;
   }
 
   if (error || !movie) {
     return (
-      <div className="hk-modal" style={{ marginTop: 80, textAlign: 'center' }}>
-        <button className="hk-modal-close" onClick={() => navigate(-1)}>&times;</button>
-        <div style={{ fontSize: 20, color: 'var(--hk-accent)' }}>{error || 'Movie not found.'}</div>
+      <div className="dp-error-container">
+        <div className="dp-error-icon">!</div>
+        <div className="dp-error-text">{error || 'Movie not found.'}</div>
+        <button className="dp-btn dp-btn-accent" onClick={() => navigate(-1)}>Go Back</button>
       </div>
     );
   }
 
-  // Extract comprehensive info
   const isTV = movie.type === 'tv' || movie.parsing?.isTV;
   const poster = movie.final?.poster || movie.final?.poster_path || movie.fullApiData?.movie?.poster_path || movie.fullApiData?.show?.poster_path;
-  const backdropPath = movie.fullApiData?.movie?.backdrop_path || movie.fullApiData?.show?.backdrop_path;
+  const backdropLocalPath = movie.final?.backdrop_path || movie.backdrop_path;
+  const backdropTmdbPath = movie.fullApiData?.movie?.backdrop_path || movie.fullApiData?.show?.backdrop_path;
+  const normalizedBackdropPath = backdropLocalPath ? backdropLocalPath.replace(/\\/g, '/') : null;
+  // Build backdrop URL: local file path → file:// URL with proper encoding, else TMDB remote
+  const backdropUrl = (() => {
+    if (normalizedBackdropPath && normalizedBackdropPath.match(/^[a-z]:/i)) {
+      // Absolute local path — encode each segment for special chars (spaces, colons in filename, unicode, etc.)
+      const parts = normalizedBackdropPath.split('/');
+      // First part is drive like "C:" — keep as-is, encode the rest
+      const encoded = parts[0] + '/' + parts.slice(1).map(p => encodeURIComponent(p)).join('/');
+      return `file:///${encoded}`;
+    }
+    if (normalizedBackdropPath && normalizedBackdropPath.startsWith('file://')) {
+      return normalizedBackdropPath;
+    }
+    // Fallback to TMDB remote URL (also catches relative TMDB paths stored as backdrop_path)
+    const tmdb = backdropTmdbPath || (normalizedBackdropPath && normalizedBackdropPath.startsWith('/') ? normalizedBackdropPath : null);
+    return tmdb ? `https://image.tmdb.org/t/p/original${tmdb}` : null;
+  })();
   const title = movie.final?.title || movie.fullApiData?.movie?.title || movie.fullApiData?.show?.name || movie.parsing?.cleanTitle || movie.filename;
   const year = movie.final?.year || movie.fullApiData?.movie?.release_date?.slice(0,4) || movie.fullApiData?.show?.first_air_date?.slice(0,4) || movie.parsing?.year;
   const overview = movie.final?.overview || movie.fullApiData?.movie?.overview || movie.fullApiData?.show?.overview;
@@ -143,367 +339,451 @@ export default function DetailPage() {
   const originalTitle = movie.fullApiData?.movie?.original_title || movie.fullApiData?.show?.original_name;
   const imdbId = movie.fullApiData?.movie?.imdb_id;
   const homepage = movie.fullApiData?.movie?.homepage || movie.fullApiData?.show?.homepage;
-  
-  // Crew info
   const director = (movie.fullApiData?.credits?.crew || []).find(c => c.job === 'Director');
-  const writer = (movie.fullApiData?.credits?.crew || []).find(c => c.job === 'Writer');
+  const writer = (movie.fullApiData?.credits?.crew || []).find(c => c.job === 'Writer' || c.job === 'Screenplay');
   const producer = (movie.fullApiData?.credits?.crew || []).find(c => c.job === 'Producer');
-  const editor = (movie.fullApiData?.credits?.crew || []).find(c => c.job === 'Editor');
-  const cinematographer = (movie.fullApiData?.credits?.crew || []).find(c => c.job === 'Director of Photography');
-  
   const productionCompanies = movie.fullApiData?.movie?.production_companies || [];
   const productionCountries = movie.fullApiData?.movie?.production_countries || [];
   const spokenLanguages = movie.fullApiData?.movie?.spoken_languages || [];
-  
-  // Cast and crew from API
   const apiCast = movie.fullApiData?.credits?.cast || [];
   const apiCrew = movie.fullApiData?.credits?.crew || [];
-  
-  // TV specific info
   const episodeData = movie.fullApiData?.episode;
   const season = movie.parsing?.season;
   const episode = movie.parsing?.episode;
   const episodeTitle = episodeData?.name;
   const episodeOverview = episodeData?.overview;
-  const episodeAirDate = episodeData?.air_date;
-  const episodeRuntime = episodeData?.runtime;
+  const resolution = getResolution(movie);
 
   const tabs = [
-    { id: 'overview', label: 'Overview' },
-    { id: 'cast', label: 'Cast' },
-    { id: 'crew', label: 'Crew' },
-    { id: 'details', label: 'Details' }
+    { id: 'overview', label: 'Overview', icon: <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 4h12M2 8h12M2 12h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg> },
+    { id: 'cast', label: 'Cast', icon: <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="5" r="3" stroke="currentColor" strokeWidth="1.5"/><path d="M2.5 14c0-2.5 2-4.5 5.5-4.5s5.5 2 5.5 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg> },
+    { id: 'crew', label: 'Crew', icon: <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="6" cy="5" r="2.5" stroke="currentColor" strokeWidth="1.5"/><circle cx="11" cy="6" r="2" stroke="currentColor" strokeWidth="1.5"/><path d="M1 13c0-2 1.5-3.5 5-3.5s5 1.5 5 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg> },
+    ...(showTrailers ? [{ id: 'trailers', label: 'Trailers', icon: <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 3h12a1 1 0 011 1v8a1 1 0 01-1 1H2a1 1 0 01-1-1V4a1 1 0 011-1z" stroke="currentColor" strokeWidth="1.5"/><path d="M6.5 6v4l3.5-2-3.5-2z" fill="currentColor"/></svg> }] : []),
+    { id: 'details', label: 'Details', icon: <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.5"/><path d="M8 5v3l2 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg> },
   ];
 
+  const castList = castPeople.length > 0 ? castPeople : apiCast;
+  const crewList = crewPeople.length > 0 ? crewPeople : apiCrew;
+
   return (
-    <div className="hk-modal" style={{ marginTop: 80, maxWidth: 1200, minHeight: 400, position: 'relative' }}>
-      <button className="hk-modal-close" onClick={() => navigate(-1)}>&times;</button>
-      
-      {/* Backdrop */}
-      {backdropPath && (
-        <div style={{ 
-          width: '100%', 
-          height: 300, 
-          background: `url(https://image.tmdb.org/t/p/original${backdropPath}) center/cover`, 
-          borderRadius: 18, 
-          marginBottom: 32, 
-          filter: 'brightness(0.3)',
-          position: 'relative'
-        }} />
-      )}
-      
-      <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap' }}>
-        {/* Poster and Play Button */}
-        <div style={{ flex: '0 0 280px', maxWidth: 280, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-          <LazyImage
-            src={poster}
-            alt={title}
-            placeholder="Loading..."
-            errorPlaceholder="No Poster"
-            style={{ width: '100%', borderRadius: 12, boxShadow: '0 0 16px #7e8ee655', marginBottom: 18 }}
-          />
-          {movie.path && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, width: '100%' }}>
-            <button
-              onClick={() => { if (window.api && window.api.openFile) window.api.openFile(movie.path); }}
-              className="hk-navbar-btn"
-                style={{ fontSize: 20, padding: '1rem 2.5rem', fontWeight: 900, marginTop: 10, background: 'var(--hk-accent)', color: '#232849', borderRadius: 12, display: 'flex', alignItems: 'center', gap: 10, justifyContent: 'center' }}
-            >
-              <span role="img" aria-label="play" style={{ fontSize: 26 }}>▶️</span> Play
-            </button>
-              <button
-                onClick={() => { if (window.api && window.api.openFile) window.api.openFile(movie.path); }}
-                style={{ 
-                  fontSize: 16, 
-                  padding: '0.8rem 2rem', 
-                  fontWeight: 700, 
-                  background: 'transparent', 
-                  color: 'var(--hk-accent)', 
-                  border: '2px solid var(--hk-accent)', 
-                  borderRadius: 12, 
-                  display: 'flex', 
-                  alignItems: 'center', 
-                  gap: 8, 
-                  justifyContent: 'center',
-                  cursor: 'pointer',
-                  transition: 'all 0.2s ease'
-                }}
-              >
-                <span role="img" aria-label="folder" style={{ fontSize: 18 }}>📁</span> Open in File Explorer
-              </button>
-            </div>
-          )}
-        </div>
-        
-        {/* Main Content */}
-        <div style={{ flex: 1, minWidth: 300 }}>
-          {/* Title and Basic Info */}
-          <div style={{ fontWeight: 900, fontSize: 36, color: 'var(--hk-accent)', marginBottom: 8 }}>
-            {title}
+    <div className="dp">
+      {/* ===== HERO ===== */}
+      <section className="dp-hero">
+        {backdropUrl && <div className="dp-hero-bg" style={{ backgroundImage: `url("${backdropUrl}")` }} />}
+        <div className="dp-hero-fade" />
+
+        {/* Back button */}
+        <button className="dp-back" onClick={() => navigate(-1)}>
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M13 16l-6-6 6-6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          Back
+        </button>
+
+        <div className="dp-hero-inner">
+          {/* Poster */}
+          <div className="dp-poster-wrap">
+            <div className="dp-poster-glow" />
+            <LazyImage
+              src={poster}
+              alt={title}
+              placeholder=""
+              errorPlaceholder="No Poster"
+              className="dp-poster"
+            />
+            {resolution && <span className="dp-poster-badge">{resolution}</span>}
+          </div>
+
+          {/* Title block */}
+          <div className="dp-hero-info">
             {isTV && season && episode && (
-              <span style={{ fontSize: 24, color: 'var(--hk-text-muted)', fontWeight: 600 }}>
-                {' '}• S{season.toString().padStart(2, '0')}E{episode.toString().padStart(2, '0')}
-              </span>
+              <span className="dp-episode-badge">S{String(season).padStart(2,'0')}E{String(episode).padStart(2,'0')}</span>
             )}
-          </div>
-          
-          {episodeTitle && (
-            <div style={{ fontSize: 20, color: 'var(--hk-accent)', marginBottom: 8, fontStyle: 'italic' }}>
-              "{episodeTitle}"
+            <h1 className="dp-title">{title}</h1>
+            {episodeTitle && <div className="dp-episode-name">{episodeTitle}</div>}
+            {tagline && <p className="dp-tagline">{tagline}</p>}
+
+            {/* Meta pills */}
+            <div className="dp-meta-pills">
+              {year && <span className="dp-pill">{year}</span>}
+              {runtime ? <span className="dp-pill">{formatRuntime(runtime)}</span> : null}
+              {genres.slice(0, 3).map(g => <span key={g.id || g.name} className="dp-pill dp-pill-genre">{g.name}</span>)}
+              {collection && <span className="dp-pill dp-pill-collection">{collection}</span>}
             </div>
-          )}
-          
-          <div style={{ color: 'var(--hk-text-muted)', fontSize: 18, marginBottom: 8 }}>
-            {year} {collection && <span style={{ marginLeft: 10, background: 'var(--hk-accent)', color: '#232849', borderRadius: 8, padding: '2px 12px', fontWeight: 700, fontSize: 14 }}>{collection}</span>}
-          </div>
-          
-          {/* Ratings and Stats */}
-          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 16 }}>
+
+            {/* Rating + votes */}
             {rating && (
-              <div style={{ color: '#ffe066', fontWeight: 700, fontSize: 18, display: 'flex', alignItems: 'center', gap: 4 }}>
-                <span style={{ fontSize: 20 }}>★</span> {Number(rating).toFixed(1)}
-                {voteCount && <span style={{ color: 'var(--hk-text-muted)', fontSize: 14, marginLeft: 4 }}>({voteCount.toLocaleString()})</span>}
+              <div className="dp-rating-row">
+                <RatingRing rating={rating} />
+                <div className="dp-rating-text">
+                  <span className="dp-rating-score">{Number(rating).toFixed(1)}<small>/10</small></span>
+                  {voteCount && <span className="dp-rating-votes">{voteCount.toLocaleString()} votes</span>}
+                </div>
+                {popularity && <span className="dp-popularity">Popularity {Math.round(popularity)}</span>}
               </div>
             )}
-            {getResolution(movie) && (
-              <div style={{ color: 'var(--hk-accent)', fontWeight: 700, fontSize: 15 }}>
-                {getResolution(movie)}
-              </div>
-            )}
-            {runtime && (
-              <div style={{ color: 'var(--hk-text-muted)', fontSize: 15 }}>
-                {formatRuntime(runtime)}
-              </div>
-            )}
-            {popularity && (
-              <div style={{ color: 'var(--hk-text-muted)', fontSize: 15 }}>
-                Popularity: {popularity.toFixed(1)}
-              </div>
-            )}
-          </div>
-          
-          {/* Tagline */}
-          {tagline && (
-            <div style={{ color: 'var(--hk-accent)', fontSize: 16, fontStyle: 'italic', marginBottom: 16 }}>
-              "{tagline}"
-            </div>
-          )}
-          
-          {/* Tabs */}
-          <div style={{ display: 'flex', gap: 2, marginBottom: 24, borderBottom: '1px solid var(--hk-border)' }}>
-            {tabs.map(tab => (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                style={{
-                  padding: '12px 24px',
-                  background: activeTab === tab.id ? 'var(--hk-accent)' : 'transparent',
-                  color: activeTab === tab.id ? '#232849' : 'var(--hk-text-muted)',
-                  border: 'none',
-                  borderRadius: '8px 8px 0 0',
-                  fontWeight: 700,
-                  cursor: 'pointer',
-                  fontSize: 15
-                }}
-              >
-                {tab.label}
+
+            {/* Buttons */}
+            <div className="dp-actions">
+              {movie.path && (
+                <button className="dp-btn dp-btn-play" onClick={() => { if (window.api?.openFile) window.api.openFile(movie.path); }}>
+                  <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M4 2.5v13l11.5-6.5L4 2.5z" fill="currentColor"/></svg>
+                  Play
+                </button>
+              )}
+              {movie.path && (
+                <button className="dp-btn dp-btn-ghost" onClick={() => { if (window.api?.openFile) window.api.openFile(movie.path); }}>
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 14h12M2 10l4-4 3 3 5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                  Open Folder
+                </button>
+              )}
+              <button className={`dp-btn dp-btn-refresh${isRefreshing ? ' spinning' : ''}`} disabled={isRefreshing || isOffline} onClick={handleRefresh} title={isOffline ? 'Unavailable offline' : 'Refresh data from TMDB'}>
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M1 8a7 7 0 0113.36-2.83M15 8A7 7 0 011.64 10.83" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/><path d="M14 1v4h-4M2 15v-4h4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                {isRefreshing ? 'Refreshing...' : 'Refresh'}
               </button>
-            ))}
+              {imdbId && (
+                <a className="dp-btn dp-btn-ghost" href={`https://www.imdb.com/title/${encodeURIComponent(imdbId)}`} target="_blank" rel="noopener noreferrer">
+                  IMDb
+                </a>
+              )}
+            </div>
+
+            {refreshMessage && <div className="dp-refresh-msg">{refreshMessage}</div>}
+            {error && <div className="dp-error-inline">{error}</div>}
           </div>
-          
-          {/* Tab Content */}
-          <div style={{ minHeight: 400 }}>
-            {activeTab === 'overview' && (
-              <div>
-                <div style={{ color: 'var(--hk-text-muted)', fontSize: 16, lineHeight: 1.6, marginBottom: 24 }}>
-                  {episodeOverview || overview}
-                </div>
-                
-                {/* Genres */}
-          {genres.length > 0 && (
-                  <div style={{ marginBottom: 16 }}>
-              <span style={{ fontWeight: 700, color: 'var(--hk-accent)' }}>Genres: </span>
-              {genres.map(g => g.name).join(', ')}
-            </div>
-          )}
-                
-                {/* Key Crew */}
-                <div style={{ marginBottom: 16 }}>
-          {director && (
-                    <div style={{ marginBottom: 8 }}>
-                      <span style={{ fontWeight: 700, color: 'var(--hk-accent)' }}>Director: </span>
-                      {director.name}
-                    </div>
-                  )}
-                  {writer && (
-                    <div style={{ marginBottom: 8 }}>
-                      <span style={{ fontWeight: 700, color: 'var(--hk-accent)' }}>Writer: </span>
-                      {writer.name}
-                    </div>
-                  )}
-                  {producer && (
-                    <div style={{ marginBottom: 8 }}>
-                      <span style={{ fontWeight: 700, color: 'var(--hk-accent)' }}>Producer: </span>
-                      {producer.name}
-            </div>
-          )}
+        </div>
+      </section>
+
+      {/* ===== CONTENT ===== */}
+      <section className="dp-body">
+        {/* Tabs */}
+        <nav className="dp-tabs">
+          {tabs.map(t => (
+            <button key={t.id} className={`dp-tab${activeTab === t.id ? ' active' : ''}`} onClick={() => setActiveTab(t.id)}>
+              <span className="dp-tab-icon">{t.icon}</span>{t.label}
+            </button>
+          ))}
+        </nav>
+
+        <div className="dp-tab-panel">
+          {/* ---- OVERVIEW ---- */}
+          {activeTab === 'overview' && (
+            <div className="dp-overview">
+              <div className="dp-overview-main">
+                <h2 className="dp-section-heading">Storyline</h2>
+                <p className="dp-synopsis">{episodeOverview || overview || 'No overview available.'}</p>
+
+                {/* Quick facts grid */}
+                <div className="dp-quick-facts">
+                  {director && <div className="dp-fact"><span className="dp-fact-label">Director</span><span className="dp-fact-value">{director.name}</span></div>}
+                  {writer && <div className="dp-fact"><span className="dp-fact-label">Writer</span><span className="dp-fact-value">{writer.name}</span></div>}
+                  {producer && <div className="dp-fact"><span className="dp-fact-label">Producer</span><span className="dp-fact-value">{producer.name}</span></div>}
+                  {status && <div className="dp-fact"><span className="dp-fact-label">Status</span><span className="dp-fact-value">{status}</span></div>}
+                  {originalLanguage && <div className="dp-fact"><span className="dp-fact-label">Language</span><span className="dp-fact-value">{originalLanguage.toUpperCase()}</span></div>}
+                  {budget ? <div className="dp-fact"><span className="dp-fact-label">Budget</span><span className="dp-fact-value">{formatCurrency(budget)}</span></div> : null}
+                  {revenue ? <div className="dp-fact"><span className="dp-fact-label">Revenue</span><span className="dp-fact-value">{formatCurrency(revenue)}</span></div> : null}
                 </div>
               </div>
-            )}
-            
-            {activeTab === 'cast' && (
-              <div>
-                <div style={{ fontWeight: 900, fontSize: 20, color: 'var(--hk-accent)', marginBottom: 16 }}>Cast</div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 16 }}>
-                  {apiCast.slice(0, 12).map((person, idx) => (
-                    <div key={idx} style={{ display: 'flex', gap: 12, alignItems: 'center', padding: 12, background: '#232849cc', borderRadius: 8 }}>
-                      <LazyImage
-                        src={person.profile_path}
-                        alt={person.name}
-                        placeholder=""
-                        errorPlaceholder=""
-                        style={{ width: 50, height: 50, borderRadius: 25, flexShrink: 0 }}
-                      />
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 14, color: 'var(--hk-accent)', fontWeight: 600, marginBottom: 2 }}>{person.name}</div>
-                        <div style={{ fontSize: 12, color: 'var(--hk-text-muted)', opacity: 0.8 }}>{person.character}</div>
-                      </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-            
-            {activeTab === 'crew' && (
-              <div>
-                <div style={{ fontWeight: 900, fontSize: 20, color: 'var(--hk-accent)', marginBottom: 16 }}>Crew</div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 16 }}>
-                  {apiCrew.slice(0, 12).map((person, idx) => (
-                    <div key={idx} style={{ display: 'flex', gap: 12, alignItems: 'center', padding: 12, background: '#232849cc', borderRadius: 8 }}>
-                      <LazyImage
-                        src={person.profile_path}
-                        alt={person.name}
-                        placeholder=""
-                        errorPlaceholder=""
-                        style={{ width: 50, height: 50, borderRadius: 25, flexShrink: 0 }}
-                      />
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 14, color: 'var(--hk-accent)', fontWeight: 600, marginBottom: 2 }}>{person.name}</div>
-                        <div style={{ fontSize: 12, color: 'var(--hk-text-muted)', opacity: 0.8 }}>{person.job}</div>
-                      </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-            
-            {activeTab === 'details' && (
-              <div>
-                <div style={{ fontWeight: 900, fontSize: 20, color: 'var(--hk-accent)', marginBottom: 16 }}>Details</div>
-                
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 24 }}>
-                  {/* Basic Info */}
-                  <div>
-                    <h3 style={{ color: 'var(--hk-accent)', fontSize: 16, marginBottom: 12 }}>Basic Information</h3>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                      {originalTitle && originalTitle !== title && (
-                        <div><strong>Original Title:</strong> {originalTitle}</div>
-                      )}
-                      {originalLanguage && (
-                        <div><strong>Original Language:</strong> {originalLanguage.toUpperCase()}</div>
-                      )}
-                      {status && (
-                        <div><strong>Status:</strong> {status}</div>
-                      )}
-                      {imdbId && (
-                        <div><strong>IMDB ID:</strong> {imdbId}</div>
-                      )}
-                      {homepage && (
-                        <div><strong>Homepage:</strong> <a href={homepage} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--hk-accent)' }}>{homepage}</a></div>
-                      )}
-                    </div>
-                  </div>
-                  
-                  {/* Financial Info */}
-                  {(budget || revenue) && (
-                    <div>
-                      <h3 style={{ color: 'var(--hk-accent)', fontSize: 16, marginBottom: 12 }}>Financial Information</h3>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                        {budget && (
-                          <div><strong>Budget:</strong> {formatCurrency(budget)}</div>
-                        )}
-                        {revenue && (
-                          <div><strong>Revenue:</strong> {formatCurrency(revenue)}</div>
-                        )}
-                      </div>
-            </div>
-          )}
-                  
-                  {/* Production Info */}
-                  {(productionCompanies.length > 0 || productionCountries.length > 0 || spokenLanguages.length > 0) && (
-                    <div>
-                      <h3 style={{ color: 'var(--hk-accent)', fontSize: 16, marginBottom: 12 }}>Production Information</h3>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                        {productionCompanies.length > 0 && (
-                          <div><strong>Production Companies:</strong> {productionCompanies.map(c => c.name).join(', ')}</div>
-                        )}
-          {productionCountries.length > 0 && (
-                          <div><strong>Production Countries:</strong> {productionCountries.map(c => c.name).join(', ')}</div>
-                        )}
-                        {spokenLanguages.length > 0 && (
-                          <div><strong>Spoken Languages:</strong> {spokenLanguages.map(l => l.name).join(', ')}</div>
-                        )}
-                      </div>
-            </div>
-          )}
-                  
-                  {/* File Location */}
-                  {movie.path && (
-                    <div>
-                      <h3 style={{ color: 'var(--hk-accent)', fontSize: 16, marginBottom: 12 }}>File Location</h3>
-                      <div style={{ 
-                        background: '#232849', 
-                        borderRadius: 8, 
-                        padding: 12,
-                        marginBottom: 8
-                      }}>
-                        <div style={{ 
-                          color: '#fff', 
-                          fontSize: 14, 
-                          wordBreak: 'break-all',
-                          fontFamily: 'monospace',
-                          lineHeight: 1.4
-                        }}>
-                          {movie.path}
+
+              {/* Top Cast sidebar */}
+              {castList.length > 0 && (
+                <div className="dp-overview-sidebar">
+                  <h3 className="dp-section-heading-sm">Top Cast</h3>
+                  <div className="dp-top-cast">
+                    {castList.slice(0, 6).map((person, i) => (
+                      <div key={i} className="dp-cast-row">
+                        <LazyImage src={person.profile_path || person.profilePath} alt={person.name} placeholder="" errorPlaceholder="" className="dp-cast-row-img" />
+                        <div>
+                          <div className="dp-cast-row-name">{person.name}</div>
+                          <div className="dp-cast-row-char">{person.character}</div>
                         </div>
                       </div>
-                      <button
-                        onClick={() => { if (window.api && window.api.openFile) window.api.openFile(movie.path); }}
-                        style={{ 
-                          fontSize: 14, 
-                          padding: '8px 16px', 
-                          fontWeight: 600, 
-                          background: 'var(--hk-accent)', 
-                          color: '#232849', 
-                          border: 'none', 
-                          borderRadius: 8, 
-                          cursor: 'pointer',
-                          transition: 'all 0.2s ease',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 6
-                        }}
-                      >
-                        <span role="img" aria-label="folder" style={{ fontSize: 14 }}>📁</span> Open in File Explorer
-                      </button>
-                    </div>
-                  )}
+                    ))}
+                    {castList.length > 6 && (
+                      <button className="dp-see-all" onClick={() => setActiveTab('cast')}>See all cast &rarr;</button>
+                    )}
+                  </div>
                 </div>
+              )}
             </div>
           )}
-          </div>
+
+          {/* ---- CAST ---- */}
+          {activeTab === 'cast' && (
+            <div>
+              <h2 className="dp-section-heading">Cast ({castList.length})</h2>
+              <div className="dp-people-grid">
+                {castList.slice(0, 24).map((person, i) => (
+                  <div key={i} className="dp-person-card">
+                    <LazyImage src={person.profile_path || person.profilePath} alt={person.name} placeholder="" errorPlaceholder="" className="dp-person-img" />
+                    <div className="dp-person-body">
+                      <div className="dp-person-name">{person.name}</div>
+                      <div className="dp-person-role">{person.character}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ---- CREW ---- */}
+          {activeTab === 'crew' && (
+            <div>
+              <h2 className="dp-section-heading">Crew ({crewList.length})</h2>
+              <div className="dp-people-grid">
+                {crewList.slice(0, 24).map((person, i) => (
+                  <div key={i} className="dp-person-card">
+                    <LazyImage src={person.profile_path || person.profilePath} alt={person.name} placeholder="" errorPlaceholder="" className="dp-person-img" />
+                    <div className="dp-person-body">
+                      <div className="dp-person-name">{person.name}</div>
+                      <div className="dp-person-role">{person.job}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ---- TRAILERS ---- */}
+          {activeTab === 'trailers' && showTrailers && (
+            <div className="dp-trailers">
+              <h2 className="dp-section-heading">Trailers & Videos</h2>
+              {trailersLoading && (
+                <div className="dp-trailers-loading">
+                  <div className="dp-loading-spinner" />
+                  <span>Loading trailers...</span>
+                </div>
+              )}
+              {!trailersLoading && trailers.length === 0 && (
+                <p className="dp-trailers-empty">No trailers available for this title.</p>
+              )}
+              {!trailersLoading && trailers.length > 0 && (
+                <>
+                  {/* Video Player */}
+                  {activeTrailer && trailerStatuses[activeTrailer]?.downloaded && (
+                    <div className="dp-trailer-player-wrap">
+                      <video
+                        key={activeTrailer}
+                        className="dp-trailer-video"
+                        controls
+                        autoPlay
+                        src={`file:///${trailerStatuses[activeTrailer].path.replace(/\\/g, '/')}`}
+                      />
+                      <div className="dp-trailer-player-info">
+                        <span className="dp-trailer-player-name">{trailers.find(t => t.key === activeTrailer)?.name}</span>
+                        <button className="dp-trailer-player-close" onClick={() => setActiveTrailer(null)}>
+                          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
+                          Close
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  {/* Trailer Cards */}
+                  <div className="dp-trailer-grid">
+                    {trailers.map((v) => {
+                      const status = trailerStatuses[v.key];
+                      const dlProgress = downloadingTrailers[v.key];
+                      const isDownloading = dlProgress !== undefined;
+                      const isPlaying = activeTrailer === v.key;
+                      const canPlay = status?.downloaded;
+                      const unavailableOffline = isOffline && !canPlay;
+                      return (
+                        <div
+                          key={v.key}
+                          className={`dp-trailer-card${isPlaying ? ' dp-trailer-card-active' : ''}${unavailableOffline ? ' dp-trailer-card-offline' : ''}`}
+                          onClick={() => !unavailableOffline && handlePlayTrailer(v.key)}
+                        >
+                          <div className="dp-trailer-card-thumb">
+                            {!isOffline ? (
+                              <img
+                                src={`https://img.youtube.com/vi/${v.key}/hqdefault.jpg`}
+                                alt={v.name}
+                                className="dp-trailer-card-img"
+                                loading="lazy"
+                              />
+                            ) : (
+                              <div className="dp-trailer-card-img dp-trailer-thumb-offline">
+                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none"><rect x="2" y="4" width="20" height="14" rx="2" stroke="currentColor" strokeWidth="1.5"/><path d="M9.5 8.5v5l4.5-2.5-4.5-2.5z" fill="currentColor"/></svg>
+                              </div>
+                            )}
+                            <div className="dp-trailer-card-overlay">
+                              {unavailableOffline ? (
+                                <div className="dp-trailer-card-offline-msg">
+                                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M1 1l22 22M16.72 11.06A10.94 10.94 0 0119 12.55M5 12.55a10.94 10.94 0 015.17-2.39M10.71 5.05A16 16 0 0122.56 9M1.42 9a15.91 15.91 0 014.7-2.88M8.53 16.11a6 6 0 016.95 0M12 20h.01" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                                  <span>Offline</span>
+                                </div>
+                              ) : isDownloading ? (
+                                <div className="dp-trailer-card-dl-progress">
+                                  <svg width="48" height="48" viewBox="0 0 48 48">
+                                    <circle cx="24" cy="24" r="20" fill="none" stroke="rgba(255,255,255,0.15)" strokeWidth="3" />
+                                    <circle cx="24" cy="24" r="20" fill="none" stroke="#22d3ee" strokeWidth="3" strokeLinecap="round"
+                                      strokeDasharray={`${2 * Math.PI * 20}`}
+                                      strokeDashoffset={`${2 * Math.PI * 20 * (1 - (dlProgress || 0) / 100)}`}
+                                      style={{ transform: 'rotate(-90deg)', transformOrigin: 'center' }} />
+                                  </svg>
+                                  <span className="dp-trailer-card-dl-pct">{dlProgress || 0}%</span>
+                                </div>
+                              ) : canPlay ? (
+                                <div className="dp-trailer-card-play">
+                                  <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><path d="M10 6v20l17-10L10 6z" fill="currentColor"/></svg>
+                                </div>
+                              ) : (
+                                <div className="dp-trailer-card-download">
+                                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                                  <span>Download</span>
+                                </div>
+                              )}
+                            </div>
+                            <div className="dp-trailer-card-badges">
+                              <span className={`dp-trailer-badge dp-trailer-badge-${v.type?.toLowerCase()}`}>{v.type}</span>
+                              {v.official && <span className="dp-trailer-badge dp-trailer-badge-official">Official</span>}
+                              {canPlay && <span className="dp-trailer-badge dp-trailer-badge-downloaded">Downloaded</span>}
+                            </div>
+                          </div>
+                          <div className="dp-trailer-card-body">
+                            <span className="dp-trailer-card-name">{v.name}</span>
+                            <span className="dp-trailer-card-sub">{canPlay ? 'Click to play' : unavailableOffline ? 'Not downloaded — unavailable offline' : isDownloading ? 'Downloading...' : 'Click to download & play'}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* ---- DETAILS ---- */}
+          {activeTab === 'details' && (
+            <div className="dp-details-grid">
+              {/* Info cards */}
+              <div className="dp-detail-card">
+                <h3>Information</h3>
+                <table className="dp-detail-table">
+                  <tbody>
+                    {originalTitle && originalTitle !== title && <tr><td>Original Title</td><td>{originalTitle}</td></tr>}
+                    {originalLanguage && <tr><td>Language</td><td>{originalLanguage.toUpperCase()}</td></tr>}
+                    {status && <tr><td>Status</td><td>{status}</td></tr>}
+                    {runtime && <tr><td>Runtime</td><td>{formatRuntime(runtime)}</td></tr>}
+                    {imdbId && <tr><td>IMDB</td><td><a href={`https://www.imdb.com/title/${encodeURIComponent(imdbId)}`} target="_blank" rel="noopener noreferrer">{imdbId}</a></td></tr>}
+                    {homepage && <tr><td>Homepage</td><td><a href={homepage} target="_blank" rel="noopener noreferrer">Visit</a></td></tr>}
+                  </tbody>
+                </table>
+              </div>
+
+              {(budget || revenue) && (
+                <div className="dp-detail-card">
+                  <h3>Box Office</h3>
+                  <table className="dp-detail-table">
+                    <tbody>
+                      {budget ? <tr><td>Budget</td><td>{formatCurrency(budget)}</td></tr> : null}
+                      {revenue ? <tr><td>Revenue</td><td>{formatCurrency(revenue)}</td></tr> : null}
+                      {budget && revenue ? <tr><td>Profit</td><td className={revenue - budget >= 0 ? 'dp-profit' : 'dp-loss'}>{formatCurrency(revenue - budget)}</td></tr> : null}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {productionCompanies.length > 0 && (
+                <div className="dp-detail-card">
+                  <h3>Production</h3>
+                  <div className="dp-prod-chips">{productionCompanies.map(c => <span key={c.id || c.name} className="dp-chip">{c.name}</span>)}</div>
+                  {productionCountries.length > 0 && <div className="dp-prod-sub">{productionCountries.map(c => c.name).join(', ')}</div>}
+                  {spokenLanguages.length > 0 && <div className="dp-prod-sub">Languages: {spokenLanguages.map(l => l.english_name || l.name).join(', ')}</div>}
+                </div>
+              )}
+
+              {movie.path && (
+                <div className="dp-detail-card">
+                  <h3>File</h3>
+                  <code className="dp-filepath">{movie.path}</code>
+                  <button className="dp-btn dp-btn-ghost dp-btn-sm" onClick={() => { if (window.api?.openFile) window.api.openFile(movie.path); }}>Open Folder</button>
+                </div>
+              )}
+
+              <div className="dp-detail-card">
+                <h3>Storage</h3>
+                {movieStorage ? (
+                  <>
+                    <div className="dp-storage-total">
+                      <span>Total disk usage</span>
+                      <span className="dp-storage-total-val">{formatBytes(movieStorage.total)}</span>
+                    </div>
+                    <div className="dp-storage-items">
+                      {movieStorage.items.map((item, idx) => {
+                        const hasPreview = (item.type === 'poster' || item.type === 'backdrop') && item.path;
+                        const isTrailerPreview = item.type === 'trailer' && item.videoKey;
+                        return (
+                          <div key={idx} className={`dp-storage-item${hasPreview || isTrailerPreview ? ' dp-storage-item-preview' : ''}`}>
+                            {hasPreview && (
+                              <div className={`dp-item-thumb${item.type === 'backdrop' ? ' dp-item-thumb-wide' : ''}`}>
+                                <img src={`file://${item.path.replace(/\\/g, '/')}`} alt="" />
+                              </div>
+                            )}
+                            {isTrailerPreview && (
+                              <div className="dp-item-thumb dp-item-thumb-wide dp-item-thumb-video">
+                                {!isOffline ? (
+                                  <img src={`https://img.youtube.com/vi/${item.videoKey}/mqdefault.jpg`} alt="" />
+                                ) : (
+                                  <div className="dp-trailer-thumb-offline" style={{ height: '100%' }}>
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><rect x="2" y="4" width="20" height="14" rx="2" stroke="currentColor" strokeWidth="1.5"/><path d="M9.5 8.5v5l4.5-2.5-4.5-2.5z" fill="currentColor"/></svg>
+                                  </div>
+                                )}
+                                <svg className="dp-item-play" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
+                              </div>
+                            )}
+                            <div className="dp-storage-item-body">
+                              <div className="dp-storage-item-info">
+                                <span className={`dp-storage-type-dot dp-stype-${item.type}`} />
+                                <span className="dp-storage-item-label">{item.label}</span>
+                                <span className="dp-storage-item-size">{formatBytes(item.size)}</span>
+                              </div>
+                              <div className="dp-storage-item-actions">
+                                {(item.type === 'poster' || item.type === 'backdrop') && (
+                                  <button
+                                    className="dp-btn dp-btn-sm dp-btn-browse"
+                                    onClick={() => setImageBrowser({ tmdbId: movie.final?.id || movie.id, mediaType: movie.final?.type || movie.type || 'movie', imageType: item.type, currentPath: item.path })}
+                                  >
+                                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor" strokeWidth="2"/><circle cx="8.5" cy="8.5" r="1.5" fill="currentColor"/><path d="M21 15l-5-5L5 21" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                                    Browse
+                                  </button>
+                                )}
+                                {!item.undeletable && (
+                                  <button
+                                    className={`dp-btn dp-btn-sm ${deletingItem === (item.path || item.type) ? 'dp-btn-danger' : 'dp-btn-ghost'}`}
+                                    onClick={() => handleDeleteStorageItem(item)}
+                                    title={deletingItem === (item.path || item.type) ? 'Click to confirm delete' : 'Delete this file'}
+                                  >
+                                    {deletingItem === (item.path || item.type) ? 'Confirm' : (
+                                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                                    )}
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {movieStorage.items.length === 0 && <p className="dp-storage-empty">No data found for this movie</p>}
+                  </>
+                ) : (
+                  <p style={{ color: 'var(--hk-text-muted)', fontSize: '0.85rem' }}>Loading...</p>
+                )}
+              </div>
+            </div>
+          )}
         </div>
-      </div>
+      </section>
+
+      {imageBrowser && (
+        <ImageBrowserModal
+          tmdbId={imageBrowser.tmdbId}
+          mediaType={imageBrowser.mediaType}
+          imageType={imageBrowser.imageType}
+          currentPath={imageBrowser.currentPath}
+          onClose={() => setImageBrowser(null)}
+          onImageChanged={() => loadMovieStorage()}
+        />
+      )}
     </div>
   );
-} 
+}

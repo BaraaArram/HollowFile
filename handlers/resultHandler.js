@@ -5,17 +5,52 @@ const axios = require('axios');
 const apiLogger = require('../utils/logger').apiLogger;
 const resultLogger = require('../utils/logger').resultLogger;
 
-async function downloadImage(url, localPath) {
+// Replace characters illegal in Windows filenames: \ / : * ? " < > |
+function sanitizeForFilename(name) {
+  return (name || 'Unknown').replace(/[\\/:*?"<>|]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+}
+
+async function downloadImage(url, localPath, timeout = 30000) {
+  // Avoid re-downloading when the file already exists.
   try {
-    const response = await axios.get(url, { responseType: 'stream' });
+    if (fs.existsSync(localPath)) {
+      const stat = fs.statSync(localPath);
+      if (stat.size > 0) {
+        resultLogger.debug(`Image already exists: ${localPath}`);
+        return localPath;
+      }
+    }
+  } catch (e) {
+    resultLogger.warn(`Failed to check existing image: ${e.message}`);
+  }
+
+  try {
+    resultLogger.debug(`Starting image download: ${url}`);
+    const response = await axios.get(url, { responseType: 'stream', timeout });
     const writer = fs.createWriteStream(localPath);
     response.data.pipe(writer);
+    
     return new Promise((resolve, reject) => {
-      writer.on('finish', resolve);
-      writer.on('error', reject);
+      const timeoutHandle = setTimeout(() => {
+        writer.destroy();
+        resultLogger.error(`Image download timeout: ${url}`);
+        reject(new Error(`Image download timeout after ${timeout}ms: ${url}`));
+      }, timeout + 5000);
+      
+      writer.on('finish', () => {
+        clearTimeout(timeoutHandle);
+        resultLogger.debug(`Image download completed: ${localPath}`);
+        resolve(localPath);
+      });
+      
+      writer.on('error', (err) => {
+        clearTimeout(timeoutHandle);
+        resultLogger.error(`Image write error: ${err.message}`);
+        reject(err);
+      });
     });
   } catch (error) {
-    apiLogger.error(`Failed to download image from ${url}: ${error.message}`);
+    resultLogger.error(`Failed to download image from ${url}: ${error.message}`);
     throw error;
   }
 }
@@ -27,18 +62,49 @@ async function handleMatchedResult(originalName, result, resultYear, dirPath, is
   const postersDir = path.resolve(dirPath, "Posters");
   if (!fs.existsSync(postersDir)) fs.mkdirSync(postersDir, { recursive: true });
   
-  const posterPath = path.resolve(postersDir, `${result.title || result.name}_${resultYear}.jpg`);
+  const posterPath = path.resolve(postersDir, `${sanitizeForFilename(result.title || result.name)}_${resultYear}.jpg`);
   const posterUrl = result.poster ? `https://image.tmdb.org/t/p/w500${result.poster}` : null;
 
   // Download poster asynchronously (don't wait for it)
   if (posterUrl) {
     emitScanProgress('downloading-poster', originalName, { currentFileIndex, totalFiles });
-    apiLogger.info(`Attempting to download poster: ${posterUrl}`);
-    downloadImage(posterUrl, posterPath).catch(e => {
-      apiLogger.warn(`Failed to download poster for ${originalName}: ${e.message}`);
-    });
+    if (!fs.existsSync(posterPath)) {
+      resultLogger.info(`[${currentFileIndex}/${totalFiles}] Attempting to download poster: ${posterUrl}`);
+      downloadImage(posterUrl, posterPath)
+        .catch(e => {
+          resultLogger.warn(`Failed to download poster for ${originalName}: ${e.message}`);
+        })
+        .finally(() => {
+          resultLogger.debug(`Poster download task finished for ${originalName}`);
+        });
+    } else {
+      resultLogger.debug(`Poster already exists: ${posterPath}`);
+    }
   } else {
-    apiLogger.warn(`No poster available for result: ${JSON.stringify(result)}`);
+    resultLogger.warn(`No poster available for result: ${result?.title || result?.name || 'unknown'}`);
+  }
+
+  // Backdrop (default from fullApiData if available)
+  const backdropPathId = fullApiData?.movie?.backdrop_path || fullApiData?.show?.backdrop_path || result.backdrop_path;
+  const backdropLocalPath = path.resolve(postersDir, `${sanitizeForFilename(result.title || result.name)}_${resultYear}_backdrop.jpg`);
+  const backdropUrl = backdropPathId ? `https://image.tmdb.org/t/p/original${backdropPathId}` : null;
+
+  if (backdropUrl) {
+    emitScanProgress('downloading-backdrop', originalName, { currentFileIndex, totalFiles });
+    if (!fs.existsSync(backdropLocalPath)) {
+      resultLogger.info(`[${currentFileIndex}/${totalFiles}] Attempting to download backdrop: ${backdropUrl}`);
+      downloadImage(backdropUrl, backdropLocalPath)
+        .catch(e => {
+          resultLogger.warn(`Failed to download backdrop for ${originalName}: ${e.message}`);
+        })
+        .finally(() => {
+          resultLogger.debug(`Backdrop download task finished for ${originalName}`);
+        });
+    } else {
+      resultLogger.debug(`Backdrop already exists: ${backdropLocalPath}`);
+    }
+  } else {
+    resultLogger.warn(`No backdrop available for result: ${result?.title || result?.name || 'unknown'}`);
   }
 
   // --- SHARED PEOPLE LOGIC ---
@@ -53,23 +119,55 @@ async function handleMatchedResult(originalName, result, resultYear, dirPath, is
       for (const person of fullApiData.credits.cast) {
         if (!person.id) continue;
         const personFile = path.join(peopleDir, `${person.id}.json`);
-        if (!fs.existsSync(personFile)) {
+        const localProfilePath = path.join(peopleDir, `${person.id}.jpg`);
+        const lockFile = path.join(peopleDir, `${person.id}.lock`);
+        const imageExists = fs.existsSync(localProfilePath);
+        let needsPersonData = !fs.existsSync(personFile);
+        if (!needsPersonData) {
+          try {
+            const existing = JSON.parse(fs.readFileSync(personFile, 'utf8'));
+            const existingPath = existing?.profile_path?.replace(/^file:\/\//, '');
+            if (existingPath && fs.existsSync(existingPath)) needsPersonData = false;
+          } catch {}
+        }
+
+        if (needsPersonData) {
           // Download profile image if available (async)
           if (person.profile_path) {
-            const profileUrl = `https://image.tmdb.org/t/p/w185${person.profile_path}`;
-            const localProfilePath = path.join(peopleDir, `${person.id}.jpg`);
-            emitScanProgress('downloading-cast-image', originalName, { personName: person.name, currentFileIndex, totalFiles });
-            downloadImage(profileUrl, localProfilePath).then(() => {
+            // If another worker already downloaded the image but hasn't written JSON yet,
+            // we can write the JSON immediately to avoid duplicate downloads.
+            if (imageExists) {
               const personData = { ...person, profile_path: localProfilePath.replace(/\\/g, '/') };
               fs.writeFileSync(personFile, JSON.stringify(personData, null, 2));
-            }).catch(e => {
-              apiLogger.warn(`Failed to download cast image for ${person.name}: ${e.message}`);
-              const personData = { ...person, profile_path: null };
-              fs.writeFileSync(personFile, JSON.stringify(personData, null, 2));
-            });
+            } else {
+              // Acquire lock to prevent duplicate downloads during the same scan.
+              if (fs.existsSync(lockFile)) {
+                // If a previous scan crashed, the lock can linger. Consider it stale.
+                try {
+                  const ageMs = Date.now() - fs.statSync(lockFile).mtimeMs;
+                  if (ageMs > 30 * 60 * 1000) fs.unlinkSync(lockFile);
+                } catch {}
+              }
+              if (!fs.existsSync(lockFile)) {
+                fs.writeFileSync(lockFile, String(Date.now()));
+                const profileUrl = `https://image.tmdb.org/t/p/w185${person.profile_path}`;
+                emitScanProgress('downloading-cast-image', originalName, { personName: person.name, currentFileIndex, totalFiles });
+
+                downloadImage(profileUrl, localProfilePath).then(() => {
+                  const personData = { ...person, profile_path: localProfilePath.replace(/\\/g, '/') };
+                  fs.writeFileSync(personFile, JSON.stringify(personData, null, 2));
+                }).catch(e => {
+                  apiLogger.warn(`Failed to download cast image for ${person.name}: ${e.message}`);
+                  const personData = { ...person, profile_path: null };
+                  fs.writeFileSync(personFile, JSON.stringify(personData, null, 2));
+                }).finally(() => {
+                  try { fs.unlinkSync(lockFile); } catch {}
+                });
+              }
+            }
           } else {
             const personData = { ...person, profile_path: null };
-          fs.writeFileSync(personFile, JSON.stringify(personData, null, 2));
+            fs.writeFileSync(personFile, JSON.stringify(personData, null, 2));
           }
         }
         castIds.push(person.id);
@@ -80,23 +178,52 @@ async function handleMatchedResult(originalName, result, resultYear, dirPath, is
       for (const person of fullApiData.credits.crew) {
         if (!person.id) continue;
         const personFile = path.join(peopleDir, `${person.id}.json`);
-        if (!fs.existsSync(personFile)) {
+        const localProfilePath = path.join(peopleDir, `${person.id}.jpg`);
+        const lockFile = path.join(peopleDir, `${person.id}.lock`);
+        const imageExists = fs.existsSync(localProfilePath);
+        let needsPersonData = !fs.existsSync(personFile);
+        if (!needsPersonData) {
+          try {
+            const existing = JSON.parse(fs.readFileSync(personFile, 'utf8'));
+            const existingPath = existing?.profile_path?.replace(/^file:\/\//, '');
+            if (existingPath && fs.existsSync(existingPath)) needsPersonData = false;
+          } catch {}
+        }
+
+        if (needsPersonData) {
           // Download profile image if available (async)
           if (person.profile_path) {
-            const profileUrl = `https://image.tmdb.org/t/p/w185${person.profile_path}`;
-            const localProfilePath = path.join(peopleDir, `${person.id}.jpg`);
-            emitScanProgress('downloading-crew-image', originalName, { personName: person.name, currentFileIndex, totalFiles });
-            downloadImage(profileUrl, localProfilePath).then(() => {
+            if (imageExists) {
               const personData = { ...person, profile_path: localProfilePath.replace(/\\/g, '/') };
               fs.writeFileSync(personFile, JSON.stringify(personData, null, 2));
-            }).catch(e => {
-              apiLogger.warn(`Failed to download crew image for ${person.name}: ${e.message}`);
-              const personData = { ...person, profile_path: null };
-              fs.writeFileSync(personFile, JSON.stringify(personData, null, 2));
-            });
+            } else {
+              if (fs.existsSync(lockFile)) {
+                // If a previous scan crashed, the lock can linger. Consider it stale.
+                try {
+                  const ageMs = Date.now() - fs.statSync(lockFile).mtimeMs;
+                  if (ageMs > 30 * 60 * 1000) fs.unlinkSync(lockFile);
+                } catch {}
+              }
+              if (!fs.existsSync(lockFile)) {
+                fs.writeFileSync(lockFile, String(Date.now()));
+                const profileUrl = `https://image.tmdb.org/t/p/w185${person.profile_path}`;
+                emitScanProgress('downloading-crew-image', originalName, { personName: person.name, currentFileIndex, totalFiles });
+
+                downloadImage(profileUrl, localProfilePath).then(() => {
+                  const personData = { ...person, profile_path: localProfilePath.replace(/\\/g, '/') };
+                  fs.writeFileSync(personFile, JSON.stringify(personData, null, 2));
+                }).catch(e => {
+                  apiLogger.warn(`Failed to download crew image for ${person.name}: ${e.message}`);
+                  const personData = { ...person, profile_path: null };
+                  fs.writeFileSync(personFile, JSON.stringify(personData, null, 2));
+                }).finally(() => {
+                  try { fs.unlinkSync(lockFile); } catch {}
+                });
+              }
+            }
           } else {
             const personData = { ...person, profile_path: null };
-          fs.writeFileSync(personFile, JSON.stringify(personData, null, 2));
+            fs.writeFileSync(personFile, JSON.stringify(personData, null, 2));
           }
         }
         crewIds.push(person.id);
@@ -109,17 +236,20 @@ async function handleMatchedResult(originalName, result, resultYear, dirPath, is
   // Ensure final.poster_path is always the local file path
   if (result && typeof result === 'object') {
     result.poster_path = posterPath.replace(/\\/g, '/');
+    result.backdrop_path = backdropLocalPath.replace(/\\/g, '/');
   }
 
   const localPosterPath = posterPath.replace(/\\/g, '/');
+  const localBackdropPath = backdropLocalPath.replace(/\\/g, '/');
+  
+  resultLogger.info(`[${currentFileIndex}/${totalFiles}] Building final result object for: ${result.title || result.name}`);
+  
   const finalWithPosterPath = {
     ...result,
     poster_path: localPosterPath,
-    poster: localPosterPath // overwrite TMDB poster with local path
+    poster: localPosterPath,
+    backdrop_path: localBackdropPath
   };
-
-  // Debug: print the final object before saving
-  console.log('Saving finalWithPosterPath:', finalWithPosterPath);
 
   const resultData = {
     original_name: originalName,
@@ -128,18 +258,27 @@ async function handleMatchedResult(originalName, result, resultYear, dirPath, is
     release_date: result.release_date || result.first_air_date,
     year_mismatch: isMismatch,
     poster_path: localPosterPath,
-    final: finalWithPosterPath, // always has local poster_path and poster
-    fullApiData, // Store the full TMDB API response (including cast/crew/credits/etc)
+    backdrop_path: localBackdropPath,
+    final: finalWithPosterPath,
+    fullApiData: fullApiData ? { 
+      movie: fullApiData.movie ? { id: fullApiData.movie.id, title: fullApiData.movie.title, release_date: fullApiData.movie.release_date } : null,
+      show: fullApiData.show ? { id: fullApiData.show.id, name: fullApiData.show.name, first_air_date: fullApiData.show.first_air_date } : null,
+      episode: fullApiData.episode ? { id: fullApiData.episode.id, season_number: fullApiData.episode.season_number, episode_number: fullApiData.episode.episode_number } : null,
+      credits: fullApiData.credits ? { cast: fullApiData.credits.cast?.slice(0, 20), crew: fullApiData.credits.crew?.slice(0, 20) } : null,
+      videos: fullApiData.videos || []
+    } : null,
     castIds,
     crewIds
   };
 
-  // The rest of the logic for writing results remains unchanged
-  const currentResults = readResults();
-  // writeResult(resultData); // Removed to prevent duplicate/partial result files
-
-  emitScanProgress('saving-result', originalName, { currentFileIndex, totalFiles });
- resultLogger.info(`Successfully saved result for: ${result.title || result.name}`);
+  try {
+    resultLogger.info(`[${currentFileIndex}/${totalFiles}] About to emit saving-result progress`);
+    emitScanProgress('saving-result', originalName, { currentFileIndex, totalFiles });
+    resultLogger.info(`[${currentFileIndex}/${totalFiles}] Successfully processed: ${result.title || result.name}`);
+  } catch (e) {
+    resultLogger.error(`Error emitting saving-result progress: ${e.message}`);
+  }
+  
   return resultData;
 }
 

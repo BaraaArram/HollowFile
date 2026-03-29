@@ -1,5 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 
+// Global cache-bust revision: incremented whenever media files change
+let _cacheBustRev = Date.now();
+window.addEventListener('media-data-changed', () => { _cacheBustRev = Date.now(); });
+
 export default function LazyImage({ 
   src, 
   alt, 
@@ -14,8 +18,20 @@ export default function LazyImage({
   const [isLoaded, setIsLoaded] = useState(false);
   const [hasError, setHasError] = useState(false);
   const [isInView, setIsInView] = useState(false);
+  const [cacheBust, setCacheBust] = useState(_cacheBustRev);
   const imgRef = useRef(null);
   const observerRef = useRef(null);
+
+  // Listen for media-data-changed to bust image cache
+  useEffect(() => {
+    const handler = () => {
+      setCacheBust(Date.now());
+      setIsLoaded(false);
+      setHasError(false);
+    };
+    window.addEventListener('media-data-changed', handler);
+    return () => window.removeEventListener('media-data-changed', handler);
+  }, []);
 
   useEffect(() => {
     // Create intersection observer for lazy loading
@@ -24,6 +40,7 @@ export default function LazyImage({
         (entries) => {
           entries.forEach(entry => {
             if (entry.isIntersecting) {
+              console.log('[LazyImage] Image coming into view:', alt, 'path:', src);
               setIsInView(true);
               observerRef.current?.unobserve(entry.target);
             }
@@ -40,14 +57,31 @@ export default function LazyImage({
         observerRef.current.disconnect();
       }
     };
-  }, []);
+  }, [alt, src]);
 
   const handleLoad = () => {
     setIsLoaded(true);
+    console.log('[LazyImage] Successfully loaded:', alt, 'from', src);
     onLoad?.();
   };
 
   const handleError = () => {
+    const resolvedSrc = (() => {
+      if (src.startsWith('file://') || src.startsWith('http://') || src.startsWith('https://')) return src;
+      if (src.match(/^[a-z]:/i)) {
+        const normalized = src.replace(/\\/g, '/');
+        return `file:///${normalized}`;
+      }
+      if (src.startsWith('/') && src.match(/^\/[a-zA-Z0-9]+\.\w+$/)) {
+        return `https://image.tmdb.org/t/p/w185${src}`;
+      }
+      return `file://${src}`;
+    })();
+    const errorMsg = `[LazyImage] Failed to load image: ${alt}, Path: ${src}, URL: ${resolvedSrc}`;
+    console.error(errorMsg);
+    if (window.api?.writeDebugLog) {
+      window.api.writeDebugLog(errorMsg).catch(e => console.error('Failed to write debug log:', e));
+    }
     setHasError(true);
     onError?.();
   };
@@ -140,7 +174,27 @@ export default function LazyImage({
       {/* Actual image */}
       {isInView && (
         <img
-          src={src.startsWith('file://') ? src : `file://${src}`}
+          key={cacheBust}
+          src={(() => {
+            let resolved;
+            if (src.startsWith('file://') || src.startsWith('http://') || src.startsWith('https://')) resolved = src;
+            else if (src.match(/^[a-z]:/i)) {
+              const normalized = src.replace(/\\/g, '/');
+              // Encode spaces/special chars so ?_v= cache-bust param is unambiguous
+              const encoded = normalized.replace(/ /g, '%20').replace(/#/g, '%23');
+              resolved = `file:///${encoded}`;
+            }
+            // TMDB relative path like /abcdef.jpg — resolve to remote TMDB URL
+            else if (src.startsWith('/') && src.match(/^\/[a-zA-Z0-9]+\.\w+$/)) {
+              resolved = `https://image.tmdb.org/t/p/w185${src}`;
+            }
+            else resolved = `file://${src}`;
+            // Cache-bust local file URLs so replaced images load fresh
+            if (resolved.startsWith('file://')) {
+              resolved += (resolved.includes('?') ? '&' : '?') + '_v=' + cacheBust;
+            }
+            return resolved;
+          })()}
           alt={alt}
           onLoad={handleLoad}
           onError={handleError}

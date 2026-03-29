@@ -4,7 +4,6 @@ export default function Pagination({
   currentPage, 
   totalPages, 
   onPageChange, 
-  itemsPerPage = 20,
   totalItems = 0 
 }) {
   if (totalPages <= 1) return null;

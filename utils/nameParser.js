@@ -5,18 +5,25 @@ function parseFileName(filename) {
 
     // --- Token-based parsing for robustness ---
     const groupTagList = [
-      'yts', 'yify', 'rarbg', 'ettv', 'evo', 'ntg', 'fgt', 'ctrlhd', 'publichd', 'amiable', 'etrg', 'cmrg', 'framestor', 'epsilon', 'decibel', 'tayto', 'hazmatt', 'bone', 'neonoir', 'bokutox', 'gaz', 'edge2020', 'vppv', 'flhd', 'cakes', 'neoNoir', 'yts.mx', 'yts.ag', 'yts.lt', 'evo', 'aac', 'ddp', 'dts', 'truehd', 'ac3', 'mp3', 'ogg', 'opus', 'lpcm', 'pcm', 'he-aac', 'atmos', 'bluray', 'brrip', 'webdl', 'webrip', 'hdtv', 'remux', 'remastered', 'unrated', 'repack', 'limited', 'dubbed', 'nf', 'amzn', 'hmax', 'dsnp', 'bbc', 'imdb', 'ptp', '3d', 'camrip', 'bdr', 'rip', 'dub', 'dual', 'multi', 'subs', 'read', 'nfo', 'internal', 'workprint', 'festival', 'proper', 'edge2020', 'neoNoir', 'vppv', 'yts', 'yify', 'gaz', 'edge2020', 'neonoir', 'vppv'
+      'yts', 'yify', 'rarbg', 'ettv', 'evo', 'ntg', 'fgt', 'ctrlhd', 'publichd', 'amiable', 'etrg', 'cmrg', 'framestor', 'epsilon', 'decibel', 'tayto', 'hazmatt', 'bone', 'neonoir', 'bokutox', 'gaz', 'edge2020', 'vppv', 'flhd', 'cakes', 'neoNoir', 'yts.mx', 'yts.ag', 'yts.lt', 'evo', 'aac', 'ddp', 'dts', 'truehd', 'ac3', 'mp3', 'ogg', 'opus', 'lpcm', 'pcm', 'he-aac', 'atmos', 'bluray', 'brrip', 'webdl', 'webrip', 'hdtv', 'remux', 'remastered', 'unrated', 'repack', 'limited', 'dubbed', 'nf', 'amzn', 'hmax', 'dsnp', 'bbc', 'imdb', 'ptp', '3d', 'camrip', 'bdr', 'rip', 'dub', 'dual', 'multi', 'subs', 'read', 'nfo', 'internal', 'workprint', 'festival', 'proper', 'edge2020', 'neoNoir', 'vppv', 'yts', 'yify', 'gaz', 'edge2020', 'neonoir', 'vppv', 'bz', 'pophd', 'sparks', 'geckos', 'usury', 'flux', 'playnow', 'stuttershit', 'tigole', 'qxr'
     ];
     const mediaTagList = [
       '1080p', '720p', '2160p', '4320p', '1440p', '480p', '360p', '4k', '8k', 'sd', 'hd', 'uhd', 'fhd', 'qhd',
       'hdr10', 'hdr', 'dv', 'dolbyvision', 'remux', 'bluray', 'bdrip', 'brrip', 'dvdrip', 'webdl', 'webrip', 'hdtv',
       'cam', 'tc', 'ts', 'hdts', 'r5', 'dvdscr', 'vhsrip', 'tvrip', 'remastered', 'unrated', 'extended', 'directors', 'cut', 'theatrical', 'uncut', 'uncensored', 'final', 'special', 'edition', 'aac', 'ac3', 'ddp', 'dts', 'truehd', 'flac', 'mp3', 'ogg', 'eac3', 'opus', 'lpcm', 'pcm', 'he-aac', 'atmos', 'dolby', 'subs', 'subbed', 'dubbed', 'multi', 'dual', 'nf', 'amzn', 'hmax', 'dsnp', 'bbc', 'imdb', 'ptp', '3d', 'camrip', 'bdr', 'rip', 'dub', 'internal', 'workprint', 'festival', 'proper', 'repack', 'limited', 'read', 'nfo', 'internal', 'workprint', 'festival', 'web', 'dl', 'hdr', 'hdr10', 'dv', 'dolbyvision', 'remux', 'bluray', 'bdrip', 'brrip', 'dvdrip', 'webdl', 'webrip', 'hdtv', 'cam', 'tc', 'ts', 'hdts', 'r5', 'dvdscr', 'vhsrip', 'tvrip', 'remastered', 'unrated', 'extended', 'directors', 'cut', 'theatrical', 'uncut', 'uncensored', 'final', 'special', 'edition'
     ];
+    // 2-letter ISO 639-1 language codes (common in filenames)
+    const langTags = [
+      'en', 'fr', 'de', 'es', 'it', 'pt', 'ru', 'ja', 'ko', 'zh', 'nl', 'pl', 'sv', 'no', 'da', 'fi', 'cs', 'hu', 'ro', 'tr', 'ar', 'hi', 'th', 'vi', 'el', 'he', 'uk', 'bg', 'hr', 'sk', 'sl', 'et', 'lt', 'lv', 'id', 'ms', 'tl'
+    ];
     // Expanded tag list for technical tokens and scene suffixes
     const extraTechTags = [
       'x264', 'x265', 'h264', 'h265', 'hevc', 'avc', 'aac', 'aac5', 'aac2', 'ddp', 'dts', 'truehd', 'ac3', 'mp3', 'ogg', 'opus', 'lpcm', 'pcm', 'eac3', 'flac', '5.1', '7.1', '2.0', '10bit', '8bit', 'hdr', 'hdr10', 'dv', 'remux', 'web', 'rip', 'bluray', 'brrip', 'webrip', 'webdl', 'hdtv', 'br', 'repack', 'remastered', 'unrated', 'limited', 'dubbed', 'multi', 'subs', 'subbed', 'nf', 'amzn', 'hmax', 'dsnp', 'bbc', 'imdb', 'ptp', '3d', 'camrip', 'bdr', 'internal', 'workprint', 'festival', 'proper', 'read', 'nfo', 'mx', 'yify', 'yts', 'rarbg', 'gaz', 'edge2020', 'neonoir', 'vppv', 'flhd', 'cakes', 'evo', 'yts.mx', 'yts.ag', 'yts.lt', 'hi', 'eng', 'spa', 'ita', 'fre', 'ger', 'rus', 'jpn', 'kor', 'chs', 'cht', 'sub', 'subs', 'dub', 'dubbed', 'dual', 'multi', 'plus', 'minus', 'atmos', 'dolby', 'vision', 'hdrip', 'dvdrip', 'dvdscr', 'vhsrip', 'tvrip', 'cam', 'tc', 'ts', 'hdts', 'r5', 'dvdscr', 'vhsrip', 'tvrip', 'remux', 'bluray', 'bdrip', 'brrip', 'dvdrip', 'webdl', 'webrip', 'hdtv', 'cam', 'tc', 'ts', 'hdts', 'r5', 'dvdscr', 'vhsrip', 'tvrip', 'remastered', 'unrated', 'extended', 'directors', 'cut', 'theatrical', 'uncut', 'uncensored', 'final', 'special', 'edition'
     ];
     const allTags = new Set([...groupTagList, ...mediaTagList, ...extraTechTags]);
+    const langTagSet = new Set(langTags);
+    // Regex to match codec-like tokens (x264, h265, x244 typos, etc.)
+    const codecRegex = /^[xh]\d{3}$/i;
     const yearRegex = /(?:^|[\s._\-([{])((?:19|20)\d{2})(?:$|[\s._\-)\]}]|\.)/;
     const tvPatterns = [
         /S(\d{1,2})E(\d{1,2})/i,         // S01E02
@@ -88,7 +95,14 @@ function parseFileName(filename) {
       if (tvCleanTitle) extendedTitles.add(tvCleanTitle);
     } else {
       // For movies, build extendedTitles as before
-      tokens = tokens.filter(tok => !allTags.has(tok.toLowerCase()));
+      tokens = tokens.filter(tok => {
+        if (allTags.has(tok.toLowerCase()) || codecRegex.test(tok)) return false;
+        // Only strip 2-letter language codes if the token is ALL UPPERCASE (e.g. "FR" but not "No")
+        if (tok.length === 2 && tok === tok.toUpperCase() && langTagSet.has(tok.toLowerCase())) return false;
+        return true;
+      });
+      // Remove isolated numbers
+      tokens = tokens.filter(tok => !/^\d+$/.test(tok));
       cleanTitle = tokens.map(w => w.length > 1 ? w.charAt(0).toUpperCase() + w.slice(1) : w.toUpperCase()).join(' ');
       const titleWords = (cleanTitle || '').split(' ');
     for (let i = 2; i <= Math.min(5, titleWords.length); i++) {
@@ -103,7 +117,7 @@ function parseFileName(filename) {
         extendedTitles.add(titleWords.slice(1).join(' '));
       }
     }
-    const sortedExtendedTitles = Array.from(extendedTitles).sort((a, b) => b.length - a.length);
+    let sortedExtendedTitles = Array.from(extendedTitles).sort((a, b) => b.length - a.length);
     // For TV shows, set cleanTitle to the first entry in extendedTitles (the full show name)
     if (isTV) {
       cleanTitle = sortedExtendedTitles[0] || '';
@@ -120,12 +134,32 @@ function parseFileName(filename) {
           return true;
         })
         .join(' ');
-      // --- NEW: Remove any word containing a technical tag as a substring (case-insensitive) ---
-      const tagRegex = new RegExp(Array.from(allTags).map(tag => tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'i');
+      // --- Remove any word that exactly matches a known tag (case-insensitive), codec pattern, or uppercase lang code ---
       cleanTitle = cleanTitle
         .split(' ')
-        .filter(w => !tagRegex.test(w))
+        .filter(w => {
+          if (allTags.has(w.toLowerCase()) || codecRegex.test(w)) return false;
+          if (w.length === 2 && w === w.toUpperCase() && langTagSet.has(w.toLowerCase())) return false;
+          return true;
+        })
         .join(' ');
+      // Rebuild extendedTitles from the fully cleaned title
+      extendedTitles.clear();
+      const cleanedWords = (cleanTitle || '').split(' ').filter(Boolean);
+      for (let i = 2; i <= Math.min(5, cleanedWords.length); i++) {
+        extendedTitles.add(cleanedWords.slice(0, i).join(' '));
+      }
+      for (let i = 2; i <= Math.min(4, cleanedWords.length); i++) {
+        if (cleanedWords.length - i >= 2) {
+          extendedTitles.add(cleanedWords.slice(-i).join(' '));
+        }
+      }
+      if (cleanedWords.length > 2) {
+        extendedTitles.add(cleanedWords.slice(1).join(' '));
+      }
+      if (cleanTitle) extendedTitles.add(cleanTitle);
+      // Re-sort after rebuild
+      sortedExtendedTitles = Array.from(extendedTitles).sort((a, b) => b.length - a.length);
     }
     const result = {
         name: originalName,

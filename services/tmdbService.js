@@ -73,6 +73,7 @@ function scoreResults(results, query, expectedYear, expectedSeason, expectedEpis
 
   const scoredResults = results.map(result => {
     const resultTitle = result.title || result.name;
+    const originalTitle = result.original_title || result.original_name || '';
     const resultYear = result.release_date
       ? result.release_date.split('-')[0]
       : result.first_air_date
@@ -95,6 +96,34 @@ function scoreResults(results, query, expectedYear, expectedSeason, expectedEpis
     } else {
     // Use the new computeScore function here
       score = computeScore(resultTitle, resultYear, query, expectedYear);
+    }
+
+    // Also score against original_title and use the higher score
+    if (originalTitle && originalTitle !== resultTitle) {
+      let originalScore;
+      if (result.season_number != null && result.episode_number != null && expectedSeason != null && expectedEpisode != null) {
+        originalScore = computeEpisodeScore(
+          originalTitle,
+          resultYear,
+          query,
+          expectedYear,
+          result.season_number,
+          result.episode_number,
+          expectedSeason,
+          expectedEpisode
+        );
+      } else {
+        originalScore = computeScore(originalTitle, resultYear, query, expectedYear);
+      }
+      if (originalScore > score) {
+        score = originalScore;
+        apiLogger.debug(`Original title scored higher`, {
+          query,
+          resultTitle,
+          originalTitle,
+          originalScore: originalScore.toFixed(2)
+        });
+      }
     }
 
     apiLogger.debug(`Scored result`, {
@@ -221,6 +250,43 @@ async function searchTVShowAndEpisode(showName, season, episode) {
   return { show: showResult, episode: null };
 }
 
+// Fetch trailer/video data from TMDB
+async function fetchVideos(tmdbId, mediaType = 'movie') {
+  const type = mediaType === 'tv' ? 'tv' : 'movie';
+  const url = `https://api.themoviedb.org/3/${type}/${tmdbId}/videos?api_key=${process.env.TMDB_API_KEY}`;
+  apiLogger.info(`Fetching videos for ${type}/${tmdbId}`);
+  try {
+    const response = await axios.get(url);
+    const results = response.data.results || [];
+    // Filter to YouTube trailers/teasers, prioritize official trailers
+    const videos = results
+      .filter(v => v.site === 'YouTube' && ['Trailer', 'Teaser', 'Clip', 'Featurette'].includes(v.type))
+      .sort((a, b) => {
+        // Official trailers first, then teasers, then others
+        const order = { Trailer: 0, Teaser: 1, Clip: 2, Featurette: 3 };
+        const diff = (order[a.type] ?? 4) - (order[b.type] ?? 4);
+        if (diff !== 0) return diff;
+        // Prefer official
+        if (a.official && !b.official) return -1;
+        if (!a.official && b.official) return 1;
+        return 0;
+      })
+      .map(v => ({
+        key: v.key,
+        name: v.name,
+        type: v.type,
+        official: v.official || false,
+        published_at: v.published_at,
+        size: v.size
+      }));
+    apiLogger.success(`Found ${videos.length} videos for ${type}/${tmdbId}`);
+    return videos;
+  } catch (err) {
+    apiLogger.error(`Failed to fetch videos for ${type}/${tmdbId}: ${err.message}`);
+    return [];
+  }
+}
+
 // Normalize a TMDB result (tv or movie) to a common format
 function normalizeTMDBResult(result) {
   if (result.media_type === 'tv' || result.first_air_date) {
@@ -257,5 +323,6 @@ module.exports = {
   scoreResults,
   findBestMatch,
   searchTVShowAndEpisode,
-  normalizeTMDBResult // Export the new function
+  normalizeTMDBResult,
+  fetchVideos
 };

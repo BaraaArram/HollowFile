@@ -17,15 +17,29 @@ function groupByCollection(movies) {
   return { collections, standalone };
 }
 
-function filterMovies(movies, search) {
-  if (!search) return movies;
-  const s = search.toLowerCase();
-  return movies.filter(file => {
-    const title = (file.final?.title || file.parsing?.cleanTitle || file.filename || '').toLowerCase();
-    const year = (file.final?.year || file.parsing?.year || '').toString();
-    const collection = (file.fullApiData?.movie?.belongs_to_collection?.name || '').toLowerCase();
-    return title.includes(s) || year.includes(s) || collection.includes(s);
-  });
+function filterMovies(movies, search, genreFilter) {
+  let filtered = movies;
+
+  // Apply search filter
+  if (search) {
+    const s = search.toLowerCase();
+    filtered = filtered.filter(file => {
+      const title = (file.final?.title || file.parsing?.cleanTitle || file.filename || '').toLowerCase();
+      const year = (file.final?.year || file.parsing?.year || '').toString();
+      const collection = (file.fullApiData?.movie?.belongs_to_collection?.name || '').toLowerCase();
+      return title.includes(s) || year.includes(s) || collection.includes(s);
+    });
+  }
+
+  // Apply genre filter
+  if (genreFilter) {
+    filtered = filtered.filter(file => {
+      const genres = file.fullApiData?.movie?.genres || [];
+      return genres.some(genre => genre.name === genreFilter);
+    });
+  }
+
+  return filtered;
 }
 
 export default function MoviesPage() {
@@ -39,6 +53,8 @@ export default function MoviesPage() {
   const [sortBy, setSortBy] = useState('title'); // 'title', 'year', 'rating', 'popularity'
   const [sortOrder, setSortOrder] = useState('asc'); // 'asc', 'desc'
   const [viewMode, setViewMode] = useState('grid'); // 'grid', 'list'
+  const [gridDensity, setGridDensity] = useState('normal'); // 'compact', 'normal', 'dense'
+  const [genreFilter, setGenreFilter] = useState(''); // genre filter from homepage
   const scanInProgress = useRef(false);
   const navigate = useNavigate();
 
@@ -65,6 +81,46 @@ export default function MoviesPage() {
     }
   }, []);
 
+  // Refresh when scan runs from other pages
+  useEffect(() => {
+    if (!window.api?.onScanProgress) return;
+    const unsub = window.api.onScanProgress((progress) => {
+      if (progress.status === 'done' || progress.status === 'scan-complete') {
+        if (!scanInProgress.current && window.api.getLastScanResults) {
+          window.api.getLastScanResults().then((results) => {
+            if (Array.isArray(results)) {
+              setMovies(results.filter(f => f.final?.type === 'movie'));
+            }
+          });
+        }
+      }
+    });
+    return unsub;
+  }, []);
+
+  // Reload when images are changed via ImageBrowserModal
+  useEffect(() => {
+    const handler = () => {
+      if (window.api?.getLastScanResults) {
+        window.api.getLastScanResults().then((results) => {
+          if (Array.isArray(results)) {
+            setMovies(results.filter(f => f.final?.type === 'movie'));
+          }
+        });
+      }
+    };
+    window.addEventListener('media-data-changed', handler);
+    return () => window.removeEventListener('media-data-changed', handler);
+  }, []);
+
+  // Check for genre filter from navigation state
+  useEffect(() => {
+    const state = window.history?.state?.usr;
+    if (state?.genreFilter) {
+      setGenreFilter(state.genreFilter);
+    }
+  }, []);
+
   const handleScan = () => {
     if (!currentDir || scanInProgress.current) return;
     setStatus(`Scanning: ${currentDir}`);
@@ -79,6 +135,8 @@ export default function MoviesPage() {
       });
     }
 
+    const autoDownloadTrailers = localStorage.getItem('autoDownloadTrailers') === 'true';
+    const trailerQuality = localStorage.getItem('trailerQuality') || '720';
     window.api.scanDirectoryStream(
       currentDir,
       (result) => {
@@ -91,7 +149,8 @@ export default function MoviesPage() {
       },
       () => {
         scanInProgress.current = false;
-      }
+      },
+      { autoDownloadTrailers, trailerQuality }
     );
   };
 
@@ -101,30 +160,34 @@ export default function MoviesPage() {
   };
 
   // Filter and sort movies
-  const filteredMovies = filterMovies(movies, debouncedSearch);
+  const filteredMovies = filterMovies(movies, debouncedSearch, genreFilter);
   const sortedMovies = [...filteredMovies].sort((a, b) => {
     let comparison = 0;
     switch (sortBy) {
-      case 'title':
+      case 'title': {
         const titleA = (a.final?.title || a.parsing?.cleanTitle || a.filename || '').toLowerCase();
         const titleB = (b.final?.title || b.parsing?.cleanTitle || b.filename || '').toLowerCase();
         comparison = titleA.localeCompare(titleB);
         break;
-      case 'year':
+      }
+      case 'year': {
         const yearA = a.final?.year || a.parsing?.year || '0';
         const yearB = b.final?.year || b.parsing?.year || '0';
         comparison = yearA.localeCompare(yearB);
         break;
-      case 'rating':
+      }
+      case 'rating': {
         const ratingA = a.final?.vote_average || a.fullApiData?.movie?.vote_average || 0;
         const ratingB = b.final?.vote_average || b.fullApiData?.movie?.vote_average || 0;
         comparison = ratingA - ratingB;
         break;
-      case 'popularity':
+      }
+      case 'popularity': {
         const popA = a.final?.popularity || a.fullApiData?.movie?.popularity || 0;
         const popB = b.final?.popularity || b.fullApiData?.movie?.popularity || 0;
         comparison = popA - popB;
         break;
+      }
       default:
         comparison = 0;
     }
@@ -135,98 +198,58 @@ export default function MoviesPage() {
   const hasResults = Object.keys(collections).length > 0 || standalone.length > 0;
 
   return (
-    <div style={{ maxWidth: 1200, margin: '0 auto', padding: '2.5rem 1.5rem 2.5rem 1.5rem' }}>
-      {/* Header Controls */}
-      <div style={{ 
-        display: 'flex', 
-        alignItems: 'center', 
-        gap: '1rem', 
-        marginBottom: '2rem', 
-        flexWrap: 'wrap' 
-      }}>
-        <div className="hk-navbar-status" style={{ 
-          margin: 0, 
-          background: '#232849cc', 
-          fontSize: 15, 
-          padding: '0.5rem 1rem', 
-          borderRadius: 10 
-        }}>
-          {status}
+    <div className="page-container">
+      {/* Hero Section */}
+      <div className="page-hero">
+        <div className="hero-content">
+          <h1 className="page-title">Movies</h1>
+          <p className="page-subtitle">
+            {sortedMovies.length} movie{sortedMovies.length !== 1 ? 's' : ''} in your library
+          </p>
         </div>
-        <button 
-          onClick={handleScan} 
-          className="hk-navbar-btn" 
-          style={{ fontSize: 16, padding: '0.6rem 1.5rem' }} 
-          disabled={scanDisabled}
-        >
-          <span role="img" aria-label="scan" style={{ marginRight: 8 }}>🔍</span>
-          Scan
-        </button>
-        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
-          <input
-            type="checkbox"
-            id="bundleCollections"
-            checked={bundleCollections}
-            onChange={e => handleBundleCollectionsChange(e.target.checked)}
-            style={{ accentColor: 'var(--hk-accent)', width: 18, height: 18 }}
-          />
-          <label htmlFor="bundleCollections" style={{ 
-            color: 'var(--hk-accent)', 
-            fontWeight: 700, 
-            fontSize: 15, 
-            cursor: 'pointer' 
-          }}>
-            Bundle collections
-          </label>
+        <div className="hero-actions">
+          <div className="status-badge">{status}</div>
+          <button 
+            onClick={handleScan} 
+            className="primary-button" 
+            disabled={scanDisabled}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M23 4v6h-6M1 20v-6h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            Rescan
+          </button>
         </div>
       </div>
 
-      {/* Search and Sort Controls */}
-      <div style={{ 
-        display: 'flex', 
-        alignItems: 'center', 
-        gap: 16, 
-        marginBottom: 24,
-        flexWrap: 'wrap'
-      }}>
+      {/* Filters Section */}
+      <div className="filters-section">
         {/* Search */}
-        <div style={{ flex: 1, minWidth: 300 }}>
-        <input
-          type="text"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          placeholder="Search by title, year, or collection..."
-          style={{
-              width: '100%',
-            background: 'var(--hk-bg-alt)',
-            color: 'var(--hk-text)',
-            border: '1.5px solid var(--hk-border)',
-            borderRadius: 12,
-            fontSize: 17,
-            padding: '0.7rem 1.2rem',
-            outline: 'none',
-            boxShadow: '0 0 8px #23284933',
-            fontFamily: 'var(--hk-font)',
-            transition: 'border 0.18s, box-shadow 0.18s',
-          }}
-        />
-      </div>
+        <div className="search-container">
+          <input
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search by title, year, or collection..."
+            className="search-input"
+          />
+          {genreFilter && (
+            <div className="genre-filter-badge">
+              <span>Genre: {genreFilter}</span>
+              <button
+                onClick={() => setGenreFilter('')}
+                className="clear-filter"
+                title="Clear genre filter"
+              >
+                ×
+              </button>
+            </div>
+          )}
+        </div>
         
-        {/* Sort Controls */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div className="controls-group">
           <select
             value={sortBy}
             onChange={e => setSortBy(e.target.value)}
-            style={{
-              background: 'var(--hk-bg-alt)',
-              color: 'var(--hk-text)',
-              border: '1.5px solid var(--hk-border)',
-              borderRadius: 8,
-              fontSize: 14,
-              padding: '0.6rem 0.8rem',
-              outline: 'none',
-              cursor: 'pointer'
-            }}
+            className="sort-select"
           >
             <option value="title">Sort by Title</option>
             <option value="year">Sort by Year</option>
@@ -236,131 +259,80 @@ export default function MoviesPage() {
           
           <button
             onClick={() => setSortOrder(order => order === 'asc' ? 'desc' : 'asc')}
-            style={{
-              background: 'var(--hk-accent)',
-              color: '#232849',
-              border: 'none',
-              borderRadius: 8,
-              padding: '0.6rem 0.8rem',
-              fontSize: 14,
-              fontWeight: 700,
-              cursor: 'pointer',
-              transition: 'all 0.2s ease'
-            }}
+            className="sort-toggle"
           >
             {sortOrder === 'asc' ? '↑' : '↓'}
           </button>
           
-          {/* View Mode Toggle */}
-          <div style={{ display: 'flex', background: '#1c2038', borderRadius: 8, padding: 2 }}>
+          <div className="view-toggle">
             <button
               onClick={() => setViewMode('grid')}
-              style={{
-                background: viewMode === 'grid' ? 'var(--hk-accent)' : 'transparent',
-                color: viewMode === 'grid' ? '#232849' : '#fff',
-                border: 'none',
-                borderRadius: 6,
-                padding: '6px 12px',
-                fontSize: 14,
-                fontWeight: 600,
-                cursor: 'pointer',
-                transition: 'all 0.2s ease'
-              }}
+              className={`toggle-button ${viewMode === 'grid' ? 'active' : ''}`}
             >
               Grid
             </button>
             <button
               onClick={() => setViewMode('list')}
-              style={{
-                background: viewMode === 'list' ? 'var(--hk-accent)' : 'transparent',
-                color: viewMode === 'list' ? '#232849' : '#fff',
-                border: 'none',
-                borderRadius: 6,
-                padding: '6px 12px',
-                fontSize: 14,
-                fontWeight: 600,
-                cursor: 'pointer',
-                transition: 'all 0.2s ease'
-              }}
+              className={`toggle-button ${viewMode === 'list' ? 'active' : ''}`}
             >
               List
             </button>
-          </div>
+        </div>
+        
+        <div className="grid-density-toggle">
+          <button
+            onClick={() => setGridDensity('normal')}
+            className={`density-button ${gridDensity === 'normal' ? 'active' : ''}`}
+          >
+            Normal
+          </button>
+          <button
+            onClick={() => setGridDensity('dense')}
+            className={`density-button ${gridDensity === 'dense' ? 'active' : ''}`}
+          >
+            Dense
+          </button>
+          <button
+            onClick={() => setGridDensity('compact')}
+            className={`density-button ${gridDensity === 'compact' ? 'active' : ''}`}
+          >
+            Compact
+          </button>
         </div>
       </div>
+      </div>
 
-      {/* Stats */}
-      <div style={{ 
-        display: 'flex', 
-        gap: 16, 
-        marginBottom: 24,
-        flexWrap: 'wrap'
-      }}>
-        <div style={{ 
-          background: '#1c2038', 
-          padding: '8px 16px', 
-          borderRadius: 8,
-          fontSize: 14,
-          fontWeight: 600,
-          color: '#fff'
-        }}>
-          {sortedMovies.length} Movie{sortedMovies.length !== 1 ? 's' : ''}
-        </div>
+      {/* Bundle Toggle */}
+      <div className="bundle-toggle">
+        <label className="toggle-label">
+          <input
+            type="checkbox"
+            checked={bundleCollections}
+            onChange={e => handleBundleCollectionsChange(e.target.checked)}
+            className="toggle-checkbox"
+          />
+          <span className="toggle-slider"></span>
+          Group movies into collections
+        </label>
         {bundleCollections && Object.keys(collections).length > 0 && (
-          <div style={{ 
-            background: '#1c2038', 
-            padding: '8px 16px', 
-            borderRadius: 8,
-            fontSize: 14,
-            fontWeight: 600,
-            color: '#fff'
-          }}>
-            {Object.keys(collections).length} Collection{Object.keys(collections).length !== 1 ? 's' : ''}
-          </div>
+          <span className="collection-count">
+            ({Object.keys(collections).length} collections)
+          </span>
         )}
       </div>
 
-      <h1 style={{ 
-        marginBottom: '2.2rem', 
-        marginTop: 0, 
-        fontSize: 32, 
-        fontWeight: 900, 
-        letterSpacing: 0.5 
-      }}>
-        Movies
-      </h1>
-
       {/* Collections Section */}
-      {bundleCollections && Object.keys(collections).length > 0 && (
-        <div style={{ marginBottom: 40 }}>
+      {bundleCollections && Object.keys(collections).length > 0 ? (
+        <div className="collections-section">
           {Object.entries(collections).map(([name, group]) => (
-            <div key={name} style={{ marginBottom: 32 }}>
-              <div style={{ 
-                fontWeight: 800, 
-                fontSize: 22, 
-                color: 'var(--hk-accent)', 
-                marginBottom: 12, 
-                letterSpacing: 0.2,
-                display: 'flex',
-                alignItems: 'center',
-                gap: 12
-              }}>
-                <span>{name}</span>
-                <span style={{ 
-                  background: '#1c2038', 
-                  padding: '4px 12px', 
-                  borderRadius: 6,
-                  fontSize: 14,
-                  fontWeight: 600
-                }}>
+            <div key={name} className="collection-group">
+              <div className="collection-header">
+                <h2 className="collection-title">{name}</h2>
+                <span className="collection-badge">
                   {group.length} movie{group.length !== 1 ? 's' : ''}
                 </span>
               </div>
-              <div className="hk-grid" style={{ 
-                margin: 0,
-                gridTemplateColumns: viewMode === 'list' ? '1fr' : 'repeat(auto-fill, minmax(280px, 1fr))',
-                gap: viewMode === 'list' ? 12 : 24
-              }}>
+              <div className={`movie-grid ${viewMode} ${gridDensity}`}>
                 {group.map((file, idx) => (
                   <MovieCard 
                     key={file.filename + idx} 
@@ -373,22 +345,12 @@ export default function MoviesPage() {
             </div>
           ))}
         </div>
-      )}
+      ) : null}
 
       {/* Standalone Movies */}
-      <div className="hk-grid" style={{ 
-        margin: 0,
-        gridTemplateColumns: viewMode === 'list' ? '1fr' : 'repeat(auto-fill, minmax(280px, 1fr))',
-        gap: viewMode === 'list' ? 12 : 24
-      }}>
+      <div className={`movie-grid ${viewMode} ${gridDensity}`}>
         {!hasResults && (
-          <div style={{ 
-            color: 'var(--hk-text-muted)', 
-            fontSize: 18, 
-            gridColumn: '1/-1',
-            textAlign: 'center',
-            padding: '3rem 0'
-          }}>
+          <div className="empty-state">
             {search ? 'No movies found matching your search.' : 'No movies found.'}
           </div>
         )}

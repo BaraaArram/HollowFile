@@ -3,19 +3,35 @@ import './App.css';
 import './style.css';
 import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import Navbar from './components/Navbar';
+import ScanProgress from './components/ScanProgress';
+import { OfflineProvider } from './contexts/OfflineContext';
+import { useOffline } from './contexts/offlineContextState';
 const MoviesPage = React.lazy(() => import('./pages/MoviesPage'));
 const ShowsPage = React.lazy(() => import('./pages/ShowsPage'));
+const HomePage = React.lazy(() => import('./pages/HomePage'));
 const UnmatchedPage = React.lazy(() => import('./pages/UnmatchedPage'));
 const DetailPage = React.lazy(() => import('./pages/DetailPage'));
 const SettingsPage = React.lazy(() => import('./pages/SettingsPage'));
 const ShowDetailPage = React.lazy(() => import('./pages/ShowDetailPage'));
 const EpisodeDetailPage = React.lazy(() => import('./pages/EpisodeDetailPage'));
+const StoragePage = React.lazy(() => import('./pages/StoragePage'));
 
 // Utility to load person data from results/people/ by ID
 async function loadPersonById(personId) {
   // Use window.api only
   if (window.api && window.api.readPersonData) {
-    return await window.api.readPersonData(personId);
+    try {
+      const person = await window.api.readPersonData(personId);
+      if (person) {
+        console.log('[App] Loaded person:', person.name, '(ID:', personId, ')', 'Profile path:', person.profile_path);
+      } else {
+        console.warn('[App] No data returned for person ID:', personId);
+      }
+      return person;
+    } catch (e) {
+      console.error('[App] Error loading person ID:', personId, '-', e.message);
+      return null;
+    }
   }
   return null;
 }
@@ -59,7 +75,8 @@ function MovieCard({ file, onShowDetails }) {
   const [imgError, setImgError] = React.useState(false);
   let posterPath = '';
   if (final.poster && typeof final.poster === 'string') {
-    posterPath = final.poster.startsWith('file://') ? final.poster : `file://${final.poster}`;
+    const normalizedPoster = final.poster.replace(/\\/g, '/');
+    posterPath = normalizedPoster.startsWith('file://') ? normalizedPoster : (normalizedPoster.match(/^[a-z]:/i) ? `file:///${normalizedPoster}` : `file://${normalizedPoster}`);
   }
   return (
     <div className="streaming-card movie-card" onClick={() => onShowDetails(file)}>
@@ -100,7 +117,7 @@ function MovieModal({ file, onClose }) {
         <div style={{ display: 'flex', gap: 24, padding: 24 }}>
           <div style={{ flex: '0 0 180px' }}>
             {final.poster ? (
-              <img src={`file://${final.poster}`} alt="Poster" style={{ width: 180, borderRadius: 12 }} />
+              <img src={(() => { const p = final.poster.replace(/\\/g, '/'); return p.startsWith('file://') ? p : (p.match(/^[a-z]:/i) ? `file:///${p}` : `file://${p}`); })()} alt="Poster" style={{ width: 180, borderRadius: 12 }} />
             ) : (
               <div className="card-poster-placeholder" style={{ width: 180, height: 270, background: '#22232b', borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>N/A</div>
             )}
@@ -121,7 +138,8 @@ function ShowCard({ group, onShowEpisodes }) {
   const [imgError, setImgError] = React.useState(false);
   let posterPath = '';
   if (group.poster && typeof group.poster === 'string') {
-    posterPath = group.poster.startsWith('file://') ? group.poster : `file://${group.poster}`;
+    const normalizedPoster = group.poster.replace(/\\/g, '/');
+    posterPath = normalizedPoster.startsWith('file://') ? normalizedPoster : (normalizedPoster.match(/^[a-z]:/i) ? `file:///${normalizedPoster}` : `file://${normalizedPoster}`);
   }
   return (
     <div className="streaming-card show-card" onClick={() => onShowEpisodes(group)}>
@@ -158,7 +176,7 @@ function ShowModal({ group, onClose }) {
         <div style={{ display: 'flex', gap: 24, padding: 24 }}>
           <div style={{ flex: '0 0 180px' }}>
             {group.poster ? (
-              <img src={`file://${group.poster}`} alt="Poster" style={{ width: 180, borderRadius: 12 }} />
+              <img src={(() => { const p = group.poster.replace(/\\/g, '/'); return p.startsWith('file://') ? p : (p.match(/^[a-z]:/i) ? `file:///${p}` : `file://${p}`); })()} alt="Poster" style={{ width: 180, borderRadius: 12 }} />
             ) : (
               <div className="card-poster-placeholder" style={{ width: 180, height: 270, background: '#22232b', borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>N/A</div>
             )}
@@ -219,6 +237,7 @@ function StreamingGrid({ children }) {
 }
 
 function StreamingPagination({ currentPage, totalPages, onPageChange }) {
+  const [jumpPage, setJumpPage] = React.useState('');
   if (totalPages <= 1) return null;
   const pageNumbers = [];
   const maxPagesToShow = 7;
@@ -234,8 +253,6 @@ function StreamingPagination({ currentPage, totalPages, onPageChange }) {
   for (let i = startPage; i <= endPage; i++) {
     pageNumbers.push(i);
   }
-  // Local state for jump-to-page
-  const [jumpPage, setJumpPage] = React.useState('');
   const handleJump = (e) => {
     e.preventDefault();
     const num = parseInt(jumpPage, 10);
@@ -287,8 +304,13 @@ function MovieDetailPage({ movie, onBack }) {
   const final = movie.final || {};
   const api = (movie.apiInfo && movie.apiInfo[0] && movie.apiInfo[0].results && movie.apiInfo[0].results[0]) || {};
   const genres = (api.genre_ids || []).map(id => GENRE_MAP[id] || id).join(', ');
-  const posterPath = final.poster && typeof final.poster === 'string' ? (final.poster.startsWith('file://') ? final.poster : `file://${final.poster}`) : '';
-  const backdropPath = api.backdrop_path ? `https://image.tmdb.org/t/p/w1280${api.backdrop_path}` : null;
+  const normalizedPosterPath = final.poster ? final.poster.replace(/\\/g, '/') : '';
+  const posterPath = normalizedPosterPath && typeof normalizedPosterPath === 'string' ? (normalizedPosterPath.startsWith('file://') ? normalizedPosterPath : (normalizedPosterPath.match(/^[a-z]:/i) ? `file:///${normalizedPosterPath}` : `file://${normalizedPosterPath}`)) : '';
+  const backdropLocalPath = final.backdrop_path || movie.backdrop_path;
+  const normalizedBackdropPath = backdropLocalPath ? backdropLocalPath.replace(/\\/g, '/') : '';
+  const backdropPath = normalizedBackdropPath
+    ? (normalizedBackdropPath.startsWith('file://') ? normalizedBackdropPath : (normalizedBackdropPath.match(/^[a-z]:/i) ? `file:///${normalizedBackdropPath}` : `file://${normalizedBackdropPath}`))
+    : (api.backdrop_path ? `https://image.tmdb.org/t/p/w1280${api.backdrop_path}` : null);
   const [cast, setCast] = React.useState([]);
   const [crew, setCrew] = React.useState([]);
 
@@ -297,6 +319,9 @@ function MovieDetailPage({ movie, onBack }) {
     let cancelled = false;
     async function loadPeople() {
       if (!movie.castIds && !movie.crewIds) return;
+      console.log('[App MovieDetail] Loading cast IDs:', movie.castIds?.slice(0, 8) || []);
+      console.log('[App MovieDetail] Loading crew IDs:', movie.crewIds?.slice(0, 3) || []);
+      
       const castArr = [];
       const crewArr = [];
       if (Array.isArray(movie.castIds)) {
@@ -311,6 +336,8 @@ function MovieDetailPage({ movie, onBack }) {
           if (person) crewArr.push(person);
 }
       }
+      console.log('[App MovieDetail] Loaded cast:', castArr.length, 'people');
+      console.log('[App MovieDetail] Loaded crew:', crewArr.length, 'people');
       if (!cancelled) {
         setCast(castArr);
         setCrew(crewArr);
@@ -361,7 +388,17 @@ function MovieDetailPage({ movie, onBack }) {
               {cast.map(actor => (
                 <div key={actor.id} style={{ width: 90, textAlign: 'center' }}>
                   {actor.profile_path ? (
-                    <img src={`file://${actor.profile_path}`} alt={actor.name} style={{ width: 70, height: 105, objectFit: 'cover', borderRadius: 8, marginBottom: 6, background: '#23232b' }} />
+                    <img 
+                      src={(() => { const p = actor.profile_path.replace(/\\/g, '/'); return p.startsWith('file://') ? p : (p.match(/^[a-z]:/i) ? `file:///${p}` : `file://${p}`); })()} 
+                      alt={actor.name} 
+                      onError={(e) => {
+                        console.error('[App Cast] Failed to load image for:', actor.name, '(ID:', actor.id, ')');
+                        console.error('[App Cast] Path:', actor.profile_path);
+                        console.error('[App Cast] Resolved URL:', e.target.src);
+                      }}
+                      onLoad={() => console.log('[App Cast] Loaded image for:', actor.name)}
+                      style={{ width: 70, height: 105, objectFit: 'cover', borderRadius: 8, marginBottom: 6, background: '#23232b' }} 
+                    />
                   ) : (
                     <div style={{ width: 70, height: 105, background: '#23232b', borderRadius: 8, margin: '0 auto 6px auto', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#888', fontSize: 13 }}>N/A</div>
                   )}
@@ -379,7 +416,17 @@ function MovieDetailPage({ movie, onBack }) {
               {crew.map(member => (
                 <div key={member.id} style={{ width: 120, textAlign: 'center' }}>
                   {member.profile_path ? (
-                    <img src={`file://${member.profile_path}`} alt={member.name} style={{ width: 70, height: 105, objectFit: 'cover', borderRadius: 8, marginBottom: 6, background: '#23232b' }} />
+                    <img 
+                      src={(() => { const p = member.profile_path.replace(/\\/g, '/'); return p.startsWith('file://') ? p : (p.match(/^[a-z]:/i) ? `file:///${p}` : `file://${p}`); })()} 
+                      alt={member.name} 
+                      onError={(e) => {
+                        console.error('[App Crew] Failed to load image for:', member.name, '(ID:', member.id, ')');
+                        console.error('[App Crew] Path:', member.profile_path);
+                        console.error('[App Crew] Resolved URL:', e.target.src);
+                      }}
+                      onLoad={() => console.log('[App Crew] Loaded image for:', member.name)}
+                      style={{ width: 70, height: 105, objectFit: 'cover', borderRadius: 8, marginBottom: 6, background: '#23232b' }} 
+                    />
                   ) : null}
                   <div style={{ color: '#fff', fontSize: 14, fontWeight: 600 }}>{member.name}</div>
                   <div style={{ color: '#b3b3b3', fontSize: 13 }}>{member.job}</div>
@@ -393,10 +440,24 @@ function MovieDetailPage({ movie, onBack }) {
   );
 }
 
+function OfflineBanner() {
+  const { isOffline, setOffline } = useOffline();
+  if (!isOffline) return null;
+  return (
+    <div className="offline-banner">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M1 1l22 22M16.72 11.06A10.94 10.94 0 0119 12.55M5 12.55a10.94 10.94 0 015.17-2.39M10.71 5.05A16 16 0 0122.56 9M1.42 9a15.91 15.91 0 014.7-2.88M8.53 16.11a6 6 0 016.95 0M12 20h.01" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+      <span>Offline</span>
+      <button className="offline-banner-btn" onClick={() => setOffline(false)}>Go Online</button>
+    </div>
+  );
+}
+
 function App() {
   const [scanStatus, setScanStatus] = useState(null);
-  const [showScanModal, setShowScanModal] = useState(false);
-  const [scanErrors, setScanErrors] = useState([]);
+  const [, setScanErrors] = useState([]);
+  const [, setIsScanning] = useState(false);
+  const [showTerminal, setShowTerminal] = useState(false);
+  const [trailerProgress, setTrailerProgress] = useState(null);
 
   useEffect(() => {
     console.log('=== APP STARTUP DEBUG ===');
@@ -414,182 +475,80 @@ function App() {
       });
     }
     
+    let unsubProgress, unsubComplete, unsubTrailer, unsubTrailerBatch;
+
     if (window.api && window.api.onScanProgress) {
       console.log('Setting up scan progress listener...');
-      const unsub = window.api.onScanProgress((progress) => {
+      unsubProgress = window.api.onScanProgress((progress) => {
         console.log('Received scan progress:', progress);
         setScanStatus(progress);
-        
-        // Show modal for any scanning activity
-        if (progress.status && progress.status !== 'scan-complete') {
-          console.log('Setting showScanModal to true');
-        setShowScanModal(true);
-        }
-        
-        // Track errors
         if (progress.error) {
           setScanErrors(prev => [...prev, { file: progress.filename, error: progress.error }]);
         }
-        
-        // Hide modal after scan-complete with delay
-        if (progress.status === 'scan-complete') {
-          setTimeout(() => {
-            setShowScanModal(false);
-            setScanErrors([]); // Clear errors on completion
-          }, 2000);
-        }
       });
+
+      // Definitive end signal — clears the bar no matter what
+      if (window.api.onScanComplete) {
+        unsubComplete = window.api.onScanComplete(() => {
+          console.log('Received scan-complete channel event — clearing scan bar');
+          setScanStatus(null);
+          setScanErrors([]);
+          setIsScanning(false);
+        });
+      }
+
       console.log('Scan progress listener set up successfully');
-      return () => { 
-        console.log('Cleaning up scan progress listener');
-        unsub && unsub(); 
-      };
     } else {
       console.log('window.api or window.api.onScanProgress not available');
       console.log('Available window.api methods:', window.api ? Object.keys(window.api) : 'none');
     }
+
+    // Trailer batch progress listener
+    if (window.api && window.api.onTrailerDownloadProgress) {
+      unsubTrailer = window.api.onTrailerDownloadProgress((data) => {
+        if (data.batch) {
+          setTrailerProgress(data);
+        }
+      });
+    }
+    if (window.api && window.api.onTrailerBatchComplete) {
+      unsubTrailerBatch = window.api.onTrailerBatchComplete(() => {
+        setTrailerProgress(null);
+      });
+    }
+
+    return () => {
+      unsubProgress && unsubProgress();
+      unsubComplete && unsubComplete();
+      unsubTrailer && unsubTrailer();
+      unsubTrailerBatch && unsubTrailerBatch();
+    };
   }, []);
 
   // Debug: log current state
-  console.log('App render - showScanModal:', showScanModal, 'scanStatus:', scanStatus);
+  console.log('App render - scanStatus:', scanStatus);
 
   return (
-    <Router>
-      {showScanModal && scanStatus && (
-        <div style={{ 
-          position: 'fixed', 
-          top: 0, 
-          left: 0, 
-          width: '100vw', 
-          height: '100vh', 
-          background: '#232849cc', 
-          zIndex: 9999, 
-          display: 'flex', 
-          alignItems: 'center', 
-          justifyContent: 'center',
-          backdropFilter: 'blur(4px)'
-        }}>
-          <div style={{ 
-            background: '#232849', 
-            borderRadius: 16, 
-            boxShadow: '0 0 32px #0008', 
-            padding: '2.5rem 2.5rem', 
-            minWidth: 340, 
-            maxWidth: '90%',
-            textAlign: 'center', 
-            color: 'var(--hk-accent)',
-            border: '1px solid var(--hk-border)'
-          }}>
-            <div style={{ fontWeight: 900, fontSize: 26, marginBottom: 18 }}>Scanning Library...</div>
-            <div style={{ fontSize: 18, marginBottom: 10 }}>
-              <b>Step:</b> {scanStatus.status ? scanStatus.status.replace(/-/g, ' ') : 'Processing...'}
-            </div>
-            {scanStatus.filename && (
-              <div style={{ fontSize: 16, marginBottom: 8, wordBreak: 'break-word' }}>
-                <b>File:</b> {scanStatus.filename}
-              </div>
-            )}
-            {scanStatus.personName && (
-              <div style={{ fontSize: 16, marginBottom: 8 }}>
-                <b>Person:</b> {scanStatus.personName}
-              </div>
-            )}
-            {/* Progress Bar */}
-            {scanStatus.totalFiles > 0 && scanStatus.currentFileIndex > 0 && (
-              <div style={{ margin: '18px 0 0 0' }}>
-                <div style={{ 
-                  height: 16, 
-                  background: '#1c2038', 
-                  borderRadius: 8, 
-                  overflow: 'hidden', 
-                  boxShadow: '0 0 8px #7e8ee655', 
-                  marginBottom: 6 
-                }}>
-                  <div style={{ 
-                    width: `${Math.round((scanStatus.currentFileIndex / scanStatus.totalFiles) * 100)}%`, 
-                    height: '100%', 
-                    background: scanStatus.error ? '#e55' : 'var(--hk-accent)', 
-                    transition: 'width 0.3s, background 0.3s',
-                    boxShadow: scanStatus.error ? '0 0 12px #e55' : '0 0 12px var(--hk-accent)'
-                  }} />
-                </div>
-                <div style={{ fontSize: 15, color: '#fff', opacity: 0.8 }}>
-                  {scanStatus.currentFileIndex} / {scanStatus.totalFiles} ({Math.round((scanStatus.currentFileIndex / scanStatus.totalFiles) * 100)}%)
-                  {scanErrors.length > 0 && (
-                    <span style={{ color: '#e55', marginLeft: 8 }}>
-                      ({scanErrors.length} error{scanErrors.length === 1 ? '' : 's'})
-                    </span>
-                  )}
-                </div>
-              </div>
-            )}
-            {scanStatus.error && (
-              <div style={{ 
-                marginTop: 12, 
-                color: '#e55', 
-                fontSize: 14,
-                background: '#e551',
-                padding: '8px 12px',
-                borderRadius: 8,
-                wordBreak: 'break-word'
-              }}>
-                Error: {scanStatus.error}
-              </div>
-            )}
-            <div style={{ marginTop: 18, color: '#fff', fontSize: 14, opacity: 0.7 }}>
-              {scanStatus.error 
-                ? 'An error occurred. Processing will continue with the next file.' 
-                : 'Please wait while we process your media files.'
-              }
-            </div>
-            {/* Error Summary */}
-            {scanErrors.length > 0 && (
-              <div style={{ 
-                marginTop: 24, 
-                textAlign: 'left', 
-                fontSize: 14,
-                maxHeight: 120,
-                overflowY: 'auto',
-                background: '#1c2038',
-                padding: 12,
-                borderRadius: 8
-              }}>
-                <div style={{ color: '#e55', marginBottom: 8, fontWeight: 600 }}>Recent Errors:</div>
-                {scanErrors.slice(-3).map((error, idx) => (
-                  <div key={idx} style={{ 
-                    color: '#fff', 
-                    opacity: 0.8, 
-                    marginBottom: 4,
-                    fontSize: 13,
-                    wordBreak: 'break-word'
-                  }}>
-                    • {error.file}: {error.error}
-                  </div>
-                ))}
-                {scanErrors.length > 3 && (
-                  <div style={{ color: '#fff', opacity: 0.6, fontSize: 12, marginTop: 4 }}>
-                    ...and {scanErrors.length - 3} more error(s)
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-      <Navbar />
-      <React.Suspense fallback={<div className="loading">Loading...</div>}>
-        <Routes>
-          <Route path="/" element={<Navigate to="/movies" />} />
-          <Route path="/movies" element={<MoviesPage />} />
-          <Route path="/shows" element={<ShowsPage />} />
-          <Route path="/unmatched" element={<UnmatchedPage />} />
-          <Route path="/detail/:type/:id" element={<DetailPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-          <Route path="/show/:showId" element={<ShowDetailPage />} />
-          <Route path="/show/:showId/episode/:season/:episode" element={<EpisodeDetailPage />} />
-        </Routes>
-      </React.Suspense>
-    </Router>
+    <OfflineProvider>
+      <OfflineBanner />
+      <ScanProgress scanStatus={scanStatus} trailerProgress={trailerProgress} />
+      <Router>
+        <Navbar onToggleTerminal={() => setShowTerminal(!showTerminal)} />
+        <React.Suspense fallback={<div className="loading">Loading...</div>}>
+          <Routes>
+            <Route path="/" element={<HomePage />} />
+            <Route path="/movies" element={<MoviesPage />} />
+            <Route path="/shows" element={<ShowsPage />} />
+            <Route path="/unmatched" element={<UnmatchedPage />} />
+            <Route path="/detail/:type/:id" element={<DetailPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/storage" element={<StoragePage />} />
+            <Route path="/show/:showId" element={<ShowDetailPage />} />
+            <Route path="/show/:showId/episode/:season/:episode" element={<EpisodeDetailPage />} />
+          </Routes>
+        </React.Suspense>
+      </Router>
+    </OfflineProvider>
   );
 }
 

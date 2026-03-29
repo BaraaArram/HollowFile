@@ -62,7 +62,8 @@ function getResultFilename(result) {
 
 function getResultFilePath(resultOrId) {
   let result = resultOrId;
-  if (typeof resultOrId === 'string') {
+  if (typeof resultOrId === 'string' || typeof resultOrId === 'number') {
+    resultOrId = String(resultOrId);
     // Try to find the file by id in all subdirs
     const subdirs = [path.join(resultsDir, 'tv'), path.join(resultsDir, 'movie')];
     for (const subdir of subdirs) {
@@ -134,18 +135,53 @@ function readResults() {
 }
 
 function writeResult(result) {
-  const subdir = getResultSubdir(result);
-  ensureDir(subdir);
-  const filePath = getResultFilePath(result);
-  console.log('[writeResult] Saving result:', { subdir, filePath, result });
-  fs.writeFileSync(filePath, JSON.stringify({ ...result, id: getResultId(result) }, null, 2));
-  return getResultId(result);
+  try {
+    console.log('[writeResult] START - Getting result subdir');
+    const subdir = getResultSubdir(result);
+    console.log('[writeResult] Got subdir:', subdir);
+    
+    console.log('[writeResult] Ensuring directory exists');
+    ensureDir(subdir);
+    console.log('[writeResult] Directory ensured');
+    
+    console.log('[writeResult] Getting result file path');
+    const filePath = getResultFilePath(result);
+    console.log('[writeResult] Got file path:', filePath);
+    
+    const resultId = getResultId(result);
+    console.log('[writeResult] Result ID:', resultId);
+    
+    // Prepare the data to write
+    const dataToWrite = { ...result, id: resultId };
+    const jsonString = JSON.stringify(dataToWrite, null, 2);
+    console.log(`[writeResult] JSON size: ${jsonString.length} bytes`);
+    
+    console.log('[writeResult] Writing to file:', filePath);
+    fs.writeFileSync(filePath, jsonString);
+    console.log('[writeResult] SUCCESS - File written');
+    
+    return resultId;
+  } catch (error) {
+    console.error('[writeResult] FAILED:', error);
+    throw error;
+  }
 }
 
 function addOrUpdateResult(newResult) {
-  newResult.id = getResultId(newResult);
-  writeResult(newResult);
-  return newResult.id;
+  try {
+    console.log('[addOrUpdateResult] START - Adding/updating result');
+    newResult.id = getResultId(newResult);
+    console.log('[addOrUpdateResult] Result ID:', newResult.id);
+    
+    console.log('[addOrUpdateResult] Calling writeResult');
+    const id = writeResult(newResult);
+    console.log('[addOrUpdateResult] SUCCESS - Result saved with ID:', id);
+    
+    return id;
+  } catch (error) {
+    console.error('[addOrUpdateResult] FAILED:', error);
+    throw error;
+  }
 }
 
 function findById(id) {

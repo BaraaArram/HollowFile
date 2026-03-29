@@ -2,6 +2,24 @@ import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import LazyImage from '../components/LazyImage';
 
+function RatingRing({ rating, size = 56 }) {
+  const r = (size - 8) / 2;
+  const circ = 2 * Math.PI * r;
+  const pct = (rating || 0) / 10;
+  const color = rating >= 7 ? '#22d3ee' : rating >= 5 ? '#facc15' : '#ef4444';
+  return (
+    <div className="dp-rating-ring">
+      <svg width={size} height={size}>
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="4" />
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color} strokeWidth="4"
+          strokeDasharray={circ} strokeDashoffset={circ * (1 - pct)}
+          strokeLinecap="round" transform={`rotate(-90 ${size / 2} ${size / 2})`} />
+      </svg>
+      <span className="dp-rating-ring-text" style={{ color }}>{rating ? rating.toFixed(1) : '—'}</span>
+    </div>
+  );
+}
+
 export default function EpisodeDetailPage() {
   const { showId, season, episode } = useParams();
   const navigate = useNavigate();
@@ -9,468 +27,200 @@ export default function EpisodeDetailPage() {
   const [showData, setShowData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('overview');
+  const [castPeople, setCastPeople] = useState([]);
+  const [crewPeople, setCrewPeople] = useState([]);
 
   useEffect(() => {
     if (window.api && window.api.getLastScanResults) {
       window.api.getLastScanResults().then((results) => {
         if (Array.isArray(results)) {
-          // Find the specific episode
-          const episode = results.find(f => {
-            const episodeSeason = f.parsing?.season || f.fullApiData?.episode?.season_number;
-            const episodeNumber = f.parsing?.episode || f.fullApiData?.episode?.episode_number;
-            return f.final?.type === 'tv' && 
-                   episodeSeason?.toString() === season && 
-                   episodeNumber?.toString() === episode;
+          const ep = results.find(f => {
+            const epSeason = f.parsing?.season || f.fullApiData?.episode?.season_number;
+            const epNumber = f.parsing?.episode || f.fullApiData?.episode?.episode_number;
+            return f.final?.type === 'tv' && epSeason?.toString() === season && epNumber?.toString() === episode;
           });
-
-          if (episode) {
-            setEpisodeData(episode);
-            
-            // Get show data from the same episode
-            const showInfo = {
-              title: episode.final?.title || episode.parsing?.cleanTitle,
-              poster: episode.final?.poster || episode.final?.poster_path,
-              year: episode.final?.year || episode.parsing?.year,
-              overview: episode.fullApiData?.show?.overview,
-              vote_average: episode.fullApiData?.show?.vote_average,
-              vote_count: episode.fullApiData?.show?.vote_count,
-              popularity: episode.fullApiData?.show?.popularity,
-              status: episode.fullApiData?.show?.status,
-              original_language: episode.fullApiData?.show?.original_language,
-              origin_country: episode.fullApiData?.show?.origin_country
-            };
-            setShowData(showInfo);
-        }
+          if (ep) {
+            setEpisodeData(ep);
+            setShowData({
+              title: ep.final?.title || ep.parsing?.cleanTitle,
+              poster: ep.final?.poster || ep.final?.poster_path,
+              year: ep.final?.year || ep.parsing?.year,
+              overview: ep.fullApiData?.show?.overview,
+              vote_average: ep.fullApiData?.show?.vote_average,
+              vote_count: ep.fullApiData?.show?.vote_count,
+              popularity: ep.fullApiData?.show?.popularity,
+              status: ep.fullApiData?.show?.status,
+              original_language: ep.fullApiData?.show?.original_language,
+              origin_country: ep.fullApiData?.show?.origin_country,
+              backdrop: ep.fullApiData?.show?.backdrop_path
+            });
+          }
         }
         setLoading(false);
       });
     }
   }, [showId, season, episode]);
-  
+
+  useEffect(() => {
+    if (!episodeData || !window.api || !window.api.readPersonData) return;
+    let cancelled = false;
+    async function loadPeople() {
+      const castIds = episodeData.castIds || (episodeData.fullApiData?.credits?.cast?.map(c => c.id).filter(Boolean) || []);
+      const crewIds = episodeData.crewIds || (episodeData.fullApiData?.credits?.crew?.map(c => c.id).filter(Boolean) || []);
+      const castArr = [];
+      for (const id of castIds.slice(0, 12)) {
+        try { const p = await window.api.readPersonData(id); if (p) castArr.push(p); } catch { void 0; }
+      }
+      const crewArr = [];
+      for (const id of crewIds.slice(0, 12)) {
+        try { const p = await window.api.readPersonData(id); if (p) crewArr.push(p); } catch { void 0; }
+      }
+      if (!cancelled) { setCastPeople(castArr); setCrewPeople(crewArr); }
+    }
+    loadPeople();
+    return () => { cancelled = true; };
+  }, [episodeData]);
+
   if (loading) {
-    return (
-      <div style={{ 
-        display: 'flex', 
-        justifyContent: 'center', 
-        alignItems: 'center', 
-        height: '50vh',
-        color: 'var(--hk-text-muted)',
-        fontSize: 18
-      }}>
-        Loading episode details...
-      </div>
-    );
+    return <div className="dp-loading"><div className="dp-loading-spinner" /><span>Loading episode details...</span></div>;
   }
-
   if (!episodeData) {
-    return (
-      <div style={{ 
-        display: 'flex', 
-        justifyContent: 'center', 
-        alignItems: 'center', 
-        height: '50vh',
-        color: 'var(--hk-text-muted)',
-        fontSize: 18
-      }}>
-        Episode not found
-      </div>
-    );
+    return <div className="dp-loading"><span>Episode not found</span></div>;
   }
 
-  const episodeInfo = episodeData.fullApiData?.episode || {};
-  const showInfo = episodeData.fullApiData?.show || {};
-  const cast = episodeData.fullApiData?.credits?.cast || [];
-  const crew = episodeData.fullApiData?.credits?.crew || [];
+  const epInfo = episodeData.fullApiData?.episode || {};
+  const cast = castPeople;
+  const crew = crewPeople;
 
-  const formatRuntime = (minutes) => {
-    if (!minutes) return '';
-    const hours = Math.floor(minutes / 60);
-    const mins = minutes % 60;
-    return hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+  const toFileUrl = (p) => {
+    if (!p) return '';
+    const n = p.replace(/\\/g, '/');
+    if (n.startsWith('file://')) return n;
+    return n.match(/^[a-z]:/i) ? `file:///${n}` : `file://${n}`;
   };
 
-  const formatDate = (dateString) => {
-    if (!dateString) return '';
-    return new Date(dateString).toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric'
-    });
-  };
-  
+  const formatRuntime = (m) => { if (!m) return ''; const h = Math.floor(m / 60); const mins = m % 60; return h > 0 ? `${h}h ${mins}m` : `${mins}m`; };
+  const formatDate = (d) => { if (!d) return ''; return new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }); };
+
+  const tabs = [
+    { key: 'overview', label: 'Overview', icon: <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 4h12M2 8h12M2 12h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg> },
+    { key: 'cast', label: `Cast (${cast.length})`, icon: <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="5" r="3" stroke="currentColor" strokeWidth="1.5"/><path d="M2.5 14c0-2.5 2-4.5 5.5-4.5s5.5 2 5.5 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg> },
+    { key: 'crew', label: `Crew (${crew.length})`, icon: <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="6" cy="5" r="2.5" stroke="currentColor" strokeWidth="1.5"/><circle cx="11" cy="6" r="2" stroke="currentColor" strokeWidth="1.5"/><path d="M1 13c0-2 1.5-3.5 5-3.5s5 1.5 5 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg> },
+    { key: 'details', label: 'Details', icon: <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.5"/><path d="M8 5v3l2 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg> },
+  ];
+
   return (
-    <div style={{ maxWidth: 1200, margin: '0 auto', padding: '2.5rem 1.5rem' }}>
-      {/* Header */}
-      <div style={{ marginBottom: 32 }}>
-            <button
-          onClick={() => navigate(-1)}
-          style={{
-            background: 'transparent',
-            color: 'var(--hk-accent)',
-            border: '1px solid var(--hk-accent)',
-            borderRadius: 8,
-            padding: '8px 16px',
-            fontSize: 14,
-            fontWeight: 600,
-            cursor: 'pointer',
-            marginBottom: 16,
-            transition: 'all 0.2s ease'
-          }}
-        >
-          ← Back
-            </button>
-        
-        <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
-          {/* Show Poster */}
-          <div style={{ flex: '0 0 200px' }}>
-            <LazyImage
-              src={showData?.poster}
-              alt={showData?.title}
-              placeholder="Loading..."
-              errorPlaceholder="No Poster"
-              style={{
-                width: '100%',
-                borderRadius: 12,
-                boxShadow: '0 8px 24px #23284966'
-              }}
-            />
+    <div className="dp">
+      {/* Hero */}
+      <section className="dp-hero">
+        {showData?.backdrop && <div className="dp-hero-bg" style={{ backgroundImage: `url(${toFileUrl(showData.backdrop)})` }} />}
+        <div className="dp-hero-fade" />
+        <button className="dp-back" onClick={() => navigate(-1)}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M10 12L6 8l4-4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          Back
+        </button>
+        <div className="dp-hero-inner">
+          <div className="dp-poster-wrap">
+            <div className="dp-poster-glow" />
+            <div className="dp-poster">
+              <LazyImage src={showData?.poster} alt={showData?.title} placeholder="Loading..." errorPlaceholder="No Poster" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            </div>
           </div>
-
-          {/* Show Info */}
-          <div style={{ flex: 1, minWidth: 300 }}>
-            <div style={{ 
-              fontWeight: 900, 
-              fontSize: 32, 
-              color: 'var(--hk-accent)', 
-              marginBottom: 8,
-              lineHeight: 1.2
-            }}>
-              {showData?.title}
+          <div className="dp-hero-info">
+            <span className="dp-episode-badge">S{season} E{episode}</span>
+            <h1 className="dp-title">{showData?.title}</h1>
+            <div className="dp-episode-name">{epInfo.name || 'Untitled Episode'}</div>
+            <div className="dp-meta-pills">
+              {showData?.year && <span className="dp-pill">{showData.year}</span>}
+              {epInfo.air_date && <span className="dp-pill">{formatDate(epInfo.air_date)}</span>}
+              {epInfo.runtime && <span className="dp-pill">{formatRuntime(epInfo.runtime)}</span>}
             </div>
-            <div style={{ 
-              color: 'var(--hk-text-muted)', 
-              fontSize: 18, 
-              marginBottom: 16 
-            }}>
-              {showData?.year}
-            </div>
-            
-            {/* Episode Title */}
-            <div style={{ 
-              fontWeight: 800, 
-              fontSize: 24, 
-              color: '#fff', 
-              marginBottom: 8 
-            }}>
-              S{season}E{episode}: {episodeInfo.name || 'Untitled Episode'}
-            </div>
-            
-            {/* Episode Air Date */}
-            {episodeInfo.air_date && (
-              <div style={{ 
-                color: 'var(--hk-text-muted)', 
-                fontSize: 16, 
-                marginBottom: 16 
-              }}>
-                Aired: {formatDate(episodeInfo.air_date)}
-              </div>
-            )}
-
-            {/* Episode Overview */}
-            {episodeInfo.overview && (
-              <div style={{ 
-                color: '#b3b3b3', 
-                fontSize: 16, 
-                lineHeight: 1.6,
-                marginBottom: 16
-              }}>
-                {episodeInfo.overview}
-              </div>
-            )}
-
-            {/* Stats */}
-            <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-              {episodeInfo.runtime && (
-                <div style={{ 
-                  background: '#1c2038', 
-                  padding: '6px 12px', 
-                  borderRadius: 8,
-                  fontSize: 14,
-                  fontWeight: 600,
-                  color: '#fff'
-                }}>
-                  {formatRuntime(episodeInfo.runtime)}
-                </div>
-              )}
-              {episodeInfo.vote_average && (
-                <div style={{ 
-                  background: '#1c2038', 
-                  padding: '6px 12px', 
-                  borderRadius: 8,
-                  fontSize: 14,
-                  fontWeight: 600,
-                  color: '#ffe066'
-                }}>
-                  ★ {episodeInfo.vote_average.toFixed(1)}
-                </div>
-              )}
-              {showData?.vote_average && (
-                <div style={{ 
-                  background: '#1c2038', 
-                  padding: '6px 12px', 
-                  borderRadius: 8,
-                  fontSize: 14,
-                  fontWeight: 600,
-                  color: '#fff'
-                }}>
-                  Show Rating: ★ {showData.vote_average.toFixed(1)}
-                </div>
+            <div className="dp-rating-row">
+              {epInfo.vote_average > 0 && (
+                <>
+                  <RatingRing rating={epInfo.vote_average} />
+                  <div className="dp-rating-text">
+                    <span className="dp-rating-score">{epInfo.vote_average.toFixed(1)}<small>/10</small></span>
+                    {epInfo.vote_count && <span className="dp-rating-votes">{epInfo.vote_count.toLocaleString()} votes</span>}
+                  </div>
+                </>
               )}
             </div>
-            
-            {/* Action Buttons */}
-            {episodeData.path && (
-              <div style={{ 
-                display: 'flex', 
-                flexDirection: 'column', 
-                gap: 12, 
-                marginTop: 24,
-                maxWidth: 300
-              }}>
-                <button
-                  onClick={() => { if (window.api && window.api.openFile) window.api.openFile(episodeData.path); }}
-                  style={{ 
-                    fontSize: 18, 
-                    padding: '1rem 2rem', 
-                    fontWeight: 700, 
-                    background: 'var(--hk-accent)', 
-                    color: '#232849', 
-                    border: 'none', 
-                    borderRadius: 12, 
-                    display: 'flex', 
-                    alignItems: 'center', 
-                    gap: 10, 
-                    justifyContent: 'center',
-                    cursor: 'pointer',
-                    transition: 'all 0.2s ease'
-                  }}
-                >
-                  <span role="img" aria-label="play" style={{ fontSize: 20 }}>▶️</span> Play Episode
+            <div className="dp-actions">
+              {episodeData.path && (
+                <button className="dp-btn dp-btn-play" onClick={() => { if (window.api?.openFile) window.api.openFile(episodeData.path); }}>
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 2.5v11l9-5.5z" fill="currentColor"/></svg>
+                  Play Episode
                 </button>
-                <button
-                  onClick={() => { if (window.api && window.api.openFile) window.api.openFile(episodeData.path); }}
-                  style={{ 
-                    fontSize: 16, 
-                    padding: '0.8rem 2rem', 
-                    fontWeight: 700, 
-                    background: 'transparent', 
-                    color: 'var(--hk-accent)', 
-                    border: '2px solid var(--hk-accent)', 
-                    borderRadius: 12, 
-                    display: 'flex', 
-                    alignItems: 'center', 
-                    gap: 8, 
-                    justifyContent: 'center',
-                    cursor: 'pointer',
-                    transition: 'all 0.2s ease'
-                  }}
-                >
-                  <span role="img" aria-label="folder" style={{ fontSize: 16 }}>📁</span> Open in File Explorer
+              )}
+              {episodeData.path && (
+                <button className="dp-btn dp-btn-ghost" onClick={() => { if (window.api?.openFile) window.api.openFile(episodeData.path); }}>
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 10v3a1 1 0 001 1h10a1 1 0 001-1v-3M5 6l3 3 3-3M8 2v7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                  Open File
                 </button>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         </div>
-      </div>
+      </section>
 
-      {/* Tabs */}
-      <div style={{ marginBottom: 24 }}>
-        <div style={{ 
-          display: 'flex', 
-          gap: 8, 
-          borderBottom: '1px solid #1c2038',
-          marginBottom: 24
-        }}>
-          {['overview', 'cast', 'crew', 'details'].map(tab => (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              style={{
-                background: activeTab === tab ? 'var(--hk-accent)' : 'transparent',
-                color: activeTab === tab ? '#232849' : '#fff',
-                border: 'none',
-                borderRadius: '8px 8px 0 0',
-                padding: '12px 20px',
-                fontSize: 16,
-                fontWeight: 600,
-                cursor: 'pointer',
-                transition: 'all 0.2s ease',
-                textTransform: 'capitalize'
-              }}
-            >
-              {tab}
+      {/* Body */}
+      <div className="dp-body">
+        <div className="dp-tabs">
+          {tabs.map(t => (
+            <button key={t.key} className={`dp-tab${activeTab === t.key ? ' active' : ''}`} onClick={() => setActiveTab(t.key)}>
+              <span className="dp-tab-icon">{t.icon}</span>{t.label}
             </button>
           ))}
         </div>
 
-        {/* Tab Content */}
-        <div style={{ minHeight: 400 }}>
+        <div className="dp-tab-panel">
           {activeTab === 'overview' && (
-            <div>
-              <h3 style={{ 
-                fontWeight: 800, 
-                fontSize: 20, 
-                color: 'var(--hk-accent)', 
-                marginBottom: 16 
-              }}>
-                Episode Overview
-              </h3>
-              <div style={{ 
-                color: '#b3b3b3', 
-                fontSize: 16, 
-                lineHeight: 1.6,
-                marginBottom: 24
-              }}>
-                {episodeInfo.overview || 'No overview available for this episode.'}
+            <div className="dp-overview" style={{ gridTemplateColumns: '1fr' }}>
+              <div className="dp-overview-main">
+                <h2 className="dp-section-heading">Episode Overview</h2>
+                <p className="dp-synopsis">{epInfo.overview || 'No overview available for this episode.'}</p>
+                {showData?.overview && (
+                  <>
+                    <h3 className="dp-section-heading-sm">Show Overview</h3>
+                    <p className="dp-synopsis">{showData.overview}</p>
+                  </>
+                )}
               </div>
-              
-              {showData?.overview && (
-                <div>
-                  <h4 style={{ 
-                    fontWeight: 700, 
-                    fontSize: 18, 
-                    color: '#fff', 
-                    marginBottom: 12 
-                  }}>
-                    Show Overview
-                  </h4>
-                  <div style={{ 
-                    color: '#b3b3b3', 
-                    fontSize: 16, 
-                    lineHeight: 1.6 
-                  }}>
-                    {showData.overview}
-                  </div>
-                </div>
-              )}
-              </div>
-            )}
+            </div>
+          )}
 
           {activeTab === 'cast' && (
             <div>
-              <h3 style={{ 
-                fontWeight: 800, 
-                fontSize: 20, 
-                color: 'var(--hk-accent)', 
-                marginBottom: 16 
-              }}>
-                Cast ({cast.length})
-              </h3>
-              <div style={{ 
-                display: 'grid', 
-                gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', 
-                gap: 16 
-              }}>
-                {cast.slice(0, 12).map((person, index) => (
-                  <div key={index} style={{ 
-                    background: '#232849', 
-                    borderRadius: 12, 
-                    padding: 16,
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 12
-                  }}>
-                    <div style={{ 
-                      width: 50, 
-                      height: 50, 
-                      borderRadius: '50%', 
-                      overflow: 'hidden',
-                      background: '#1c2038'
-                    }}>
-                      <LazyImage
-                        src={person.profile_path ? `file://${episodeData.path}/people/${person.id}.jpg` : null}
-                        alt={person.name}
-                        placeholder=""
-                        errorPlaceholder=""
-                        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                      />
+              <h2 className="dp-section-heading">Cast ({cast.length})</h2>
+              <div className="dp-people-grid">
+                {cast.slice(0, 12).map((person, i) => (
+                  <div key={i} className="dp-person-card">
+                    <div className="dp-person-img">
+                      <LazyImage src={person.profile_path} alt={person.name} placeholder="" errorPlaceholder="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                     </div>
-                    <div>
-                      <div style={{ 
-                        fontWeight: 700, 
-                        fontSize: 14, 
-                        color: '#fff',
-                        marginBottom: 4
-                      }}>
-                        {person.name}
-                      </div>
-                      <div style={{ 
-                        color: 'var(--hk-text-muted)', 
-                        fontSize: 12 
-                      }}>
-                        {person.character}
-                      </div>
+                    <div className="dp-person-body">
+                      <div className="dp-person-name">{person.name}</div>
+                      <div className="dp-person-role">{person.character}</div>
                     </div>
                   </div>
                 ))}
               </div>
-              </div>
-            )}
+            </div>
+          )}
 
           {activeTab === 'crew' && (
             <div>
-              <h3 style={{ 
-                fontWeight: 800, 
-                fontSize: 20, 
-                color: 'var(--hk-accent)', 
-                marginBottom: 16 
-              }}>
-                Crew ({crew.length})
-              </h3>
-              <div style={{ 
-                display: 'grid', 
-                gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', 
-                gap: 16 
-              }}>
-                {crew.slice(0, 12).map((person, index) => (
-                  <div key={index} style={{ 
-                    background: '#232849', 
-                    borderRadius: 12, 
-                    padding: 16,
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 12
-                  }}>
-                    <div style={{ 
-                      width: 50, 
-                      height: 50, 
-                      borderRadius: '50%', 
-                      overflow: 'hidden',
-                      background: '#1c2038'
-                    }}>
-                      <LazyImage
-                        src={person.profile_path ? `file://${episodeData.path}/people/${person.id}.jpg` : null}
-                        alt={person.name}
-                        placeholder=""
-                        errorPlaceholder=""
-                        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                      />
+              <h2 className="dp-section-heading">Crew ({crew.length})</h2>
+              <div className="dp-people-grid">
+                {crew.slice(0, 12).map((person, i) => (
+                  <div key={i} className="dp-person-card">
+                    <div className="dp-person-img">
+                      <LazyImage src={person.profile_path} alt={person.name} placeholder="" errorPlaceholder="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                     </div>
-                    <div>
-                      <div style={{ 
-                        fontWeight: 700, 
-                        fontSize: 14, 
-                        color: '#fff',
-                        marginBottom: 4
-                      }}>
-                        {person.name}
-                      </div>
-                      <div style={{ 
-                        color: 'var(--hk-text-muted)', 
-                        fontSize: 12 
-                      }}>
-                        {person.job}
-                      </div>
+                    <div className="dp-person-body">
+                      <div className="dp-person-name">{person.name}</div>
+                      <div className="dp-person-role">{person.job}</div>
                     </div>
                   </div>
                 ))}
@@ -480,167 +230,42 @@ export default function EpisodeDetailPage() {
 
           {activeTab === 'details' && (
             <div>
-              <h3 style={{ 
-                fontWeight: 800, 
-                fontSize: 20, 
-                color: 'var(--hk-accent)', 
-                marginBottom: 16 
-              }}>
-                Episode Details
-              </h3>
-              <div style={{ 
-                display: 'grid', 
-                gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', 
-                gap: 24 
-              }}>
-                <div>
-                  <h4 style={{ 
-                    fontWeight: 700, 
-                    fontSize: 16, 
-                    color: '#fff', 
-                    marginBottom: 12 
-                  }}>
-                    Episode Information
-                  </h4>
-                  <div style={{ 
-                    background: '#232849', 
-                    borderRadius: 12, 
-                    padding: 16 
-                  }}>
-                    <div style={{ marginBottom: 8 }}>
-                      <span style={{ color: 'var(--hk-text-muted)', fontSize: 14 }}>Season:</span>
-                      <span style={{ color: '#fff', fontSize: 14, marginLeft: 8 }}>{season}</span>
-                    </div>
-                    <div style={{ marginBottom: 8 }}>
-                      <span style={{ color: 'var(--hk-text-muted)', fontSize: 14 }}>Episode:</span>
-                      <span style={{ color: '#fff', fontSize: 14, marginLeft: 8 }}>{episode}</span>
-                    </div>
-                    {episodeInfo.air_date && (
-                      <div style={{ marginBottom: 8 }}>
-                        <span style={{ color: 'var(--hk-text-muted)', fontSize: 14 }}>Air Date:</span>
-                        <span style={{ color: '#fff', fontSize: 14, marginLeft: 8 }}>{formatDate(episodeInfo.air_date)}</span>
-                      </div>
-                    )}
-                    {episodeInfo.runtime && (
-                      <div style={{ marginBottom: 8 }}>
-                        <span style={{ color: 'var(--hk-text-muted)', fontSize: 14 }}>Runtime:</span>
-                        <span style={{ color: '#fff', fontSize: 14, marginLeft: 8 }}>{formatRuntime(episodeInfo.runtime)}</span>
-                      </div>
-                    )}
-                    {episodeInfo.vote_average && (
-                      <div style={{ marginBottom: 8 }}>
-                        <span style={{ color: 'var(--hk-text-muted)', fontSize: 14 }}>Rating:</span>
-                        <span style={{ color: '#ffe066', fontSize: 14, marginLeft: 8 }}>★ {episodeInfo.vote_average.toFixed(1)}</span>
-                      </div>
-                    )}
-                    {episodeInfo.vote_count && (
-                      <div>
-                        <span style={{ color: 'var(--hk-text-muted)', fontSize: 14 }}>Votes:</span>
-                        <span style={{ color: '#fff', fontSize: 14, marginLeft: 8 }}>{episodeInfo.vote_count.toLocaleString()}</span>
+              <h2 className="dp-section-heading">Episode Details</h2>
+              <div className="dp-details-grid">
+                <div className="dp-detail-card">
+                  <h3>Episode Information</h3>
+                  <table className="dp-detail-table">
+                    <tbody>
+                      <tr><td>Season</td><td>{season}</td></tr>
+                      <tr><td>Episode</td><td>{episode}</td></tr>
+                      {epInfo.air_date && <tr><td>Air Date</td><td>{formatDate(epInfo.air_date)}</td></tr>}
+                      {epInfo.runtime && <tr><td>Runtime</td><td>{formatRuntime(epInfo.runtime)}</td></tr>}
+                      {epInfo.vote_average > 0 && <tr><td>Rating</td><td style={{ color: '#ffe066' }}>★ {epInfo.vote_average.toFixed(1)}</td></tr>}
+                      {epInfo.vote_count > 0 && <tr><td>Votes</td><td>{epInfo.vote_count.toLocaleString()}</td></tr>}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="dp-detail-card">
+                  <h3>Show Information</h3>
+                  <table className="dp-detail-table">
+                    <tbody>
+                      {showData?.status && <tr><td>Status</td><td>{showData.status}</td></tr>}
+                      {showData?.original_language && <tr><td>Language</td><td>{showData.original_language.toUpperCase()}</td></tr>}
+                      {showData?.origin_country?.length > 0 && <tr><td>Country</td><td>{showData.origin_country.join(', ')}</td></tr>}
+                      {showData?.vote_average > 0 && <tr><td>Show Rating</td><td style={{ color: '#ffe066' }}>★ {showData.vote_average.toFixed(1)}</td></tr>}
+                      {showData?.vote_count > 0 && <tr><td>Show Votes</td><td>{showData.vote_count.toLocaleString()}</td></tr>}
+                      {showData?.popularity > 0 && <tr><td>Popularity</td><td>{showData.popularity.toFixed(1)}</td></tr>}
+                    </tbody>
+                  </table>
+                </div>
               </div>
-            )}
-                  </div>
-                </div>
-                
-                <div>
-                  <h4 style={{ 
-                    fontWeight: 700, 
-                    fontSize: 16, 
-                    color: '#fff', 
-                    marginBottom: 12 
-                  }}>
-                    Show Information
-                  </h4>
-                  <div style={{ 
-                    background: '#232849', 
-                    borderRadius: 12, 
-                    padding: 16 
-                  }}>
-                    {showData?.status && (
-                      <div style={{ marginBottom: 8 }}>
-                        <span style={{ color: 'var(--hk-text-muted)', fontSize: 14 }}>Status:</span>
-                        <span style={{ color: '#fff', fontSize: 14, marginLeft: 8 }}>{showData.status}</span>
-                      </div>
-                    )}
-                    {showData?.original_language && (
-                      <div style={{ marginBottom: 8 }}>
-                        <span style={{ color: 'var(--hk-text-muted)', fontSize: 14 }}>Language:</span>
-                        <span style={{ color: '#fff', fontSize: 14, marginLeft: 8 }}>{showData.original_language.toUpperCase()}</span>
-                      </div>
-                    )}
-                    {showData?.origin_country && showData.origin_country.length > 0 && (
-                      <div style={{ marginBottom: 8 }}>
-                        <span style={{ color: 'var(--hk-text-muted)', fontSize: 14 }}>Country:</span>
-                        <span style={{ color: '#fff', fontSize: 14, marginLeft: 8 }}>{showData.origin_country.join(', ')}</span>
-                      </div>
-                    )}
-                    {showData?.vote_average && (
-                      <div style={{ marginBottom: 8 }}>
-                        <span style={{ color: 'var(--hk-text-muted)', fontSize: 14 }}>Show Rating:</span>
-                        <span style={{ color: '#ffe066', fontSize: 14, marginLeft: 8 }}>★ {showData.vote_average.toFixed(1)}</span>
-                      </div>
-                    )}
-                    {showData?.vote_count && (
-                      <div style={{ marginBottom: 8 }}>
-                        <span style={{ color: 'var(--hk-text-muted)', fontSize: 14 }}>Show Votes:</span>
-                        <span style={{ color: '#fff', fontSize: 14, marginLeft: 8 }}>{showData.vote_count.toLocaleString()}</span>
-                      </div>
-                    )}
-                    {showData?.popularity && (
-                      <div>
-                        <span style={{ color: 'var(--hk-text-muted)', fontSize: 14 }}>Popularity:</span>
-                        <span style={{ color: '#fff', fontSize: 14, marginLeft: 8 }}>{showData.popularity.toFixed(1)}</span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-          </div>
-          
-              {/* File Location */}
               {episodeData.path && (
-                <div style={{ marginTop: 24 }}>
-                  <h4 style={{ 
-                    fontWeight: 700, 
-                    fontSize: 16, 
-                    color: '#fff', 
-                    marginBottom: 12 
-                  }}>
-                    File Location
-                  </h4>
-                  <div style={{ 
-                    background: '#232849', 
-                    borderRadius: 12, 
-                    padding: 16,
-                    marginBottom: 12
-                  }}>
-                    <div style={{ 
-                      color: '#fff', 
-                      fontSize: 14, 
-                      wordBreak: 'break-all',
-                      fontFamily: 'monospace',
-                      lineHeight: 1.4
-                    }}>
-                      {episodeData.path}
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => { if (window.api && window.api.openFile) window.api.openFile(episodeData.path); }}
-                    style={{ 
-                      fontSize: 14, 
-                      padding: '8px 16px', 
-                      fontWeight: 600, 
-                      background: 'var(--hk-accent)', 
-                      color: '#232849', 
-                      border: 'none', 
-                      borderRadius: 8, 
-                      cursor: 'pointer',
-                      transition: 'all 0.2s ease',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 6
-                    }}
-                  >
-                    <span role="img" aria-label="folder" style={{ fontSize: 14 }}>📁</span> Open in File Explorer
+                <div className="dp-detail-card" style={{ marginTop: '1.25rem' }}>
+                  <h3>File Location</h3>
+                  <code className="dp-filepath">{episodeData.path}</code>
+                  <button className="dp-btn dp-btn-sm dp-btn-accent" onClick={() => { if (window.api?.openFile) window.api.openFile(episodeData.path); }}>
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M2 10v3a1 1 0 001 1h10a1 1 0 001-1v-3M5 6l3 3 3-3M8 2v7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    Open in File Explorer
                   </button>
                 </div>
               )}
@@ -650,4 +275,4 @@ export default function EpisodeDetailPage() {
       </div>
     </div>
   );
-} 
+}
