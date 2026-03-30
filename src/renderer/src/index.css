@@ -1414,6 +1414,53 @@ a {
   line-height: 1.5;
   margin-bottom: 8px;
 }
+.dp-manual-tmdb {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid rgba(255,255,255,0.06);
+}
+.dp-manual-tmdb-label {
+  display: block;
+  margin-bottom: 0.55rem;
+  color: var(--hk-text-muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.dp-manual-tmdb-row {
+  display: flex;
+  gap: 0.65rem;
+  align-items: center;
+}
+.dp-manual-tmdb-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.72rem 0.9rem;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--hk-border);
+  border-radius: 10px;
+  color: var(--hk-text);
+  font-size: 0.92rem;
+  font-family: var(--hk-font);
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.dp-manual-tmdb-input:focus {
+  border-color: var(--hk-accent);
+  box-shadow: 0 0 0 3px rgba(34,211,238,0.1);
+}
+.dp-manual-tmdb-help {
+  margin: 0.65rem 0 0;
+  color: var(--hk-text-muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+.dp-manual-tmdb-status {
+  margin-top: 0.55rem;
+  color: var(--hk-accent);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
 
 /* ---- TRAILERS TAB ---- */
 .dp-trailers { padding: 0; }

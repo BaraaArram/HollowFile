@@ -35,6 +35,7 @@ contextBridge.exposeInMainWorld('api', {
   readPersonData: (personId) => ipcRenderer.invoke('read-person-data', personId),
   setTmdbApiKey: (key) => ipcRenderer.invoke('set-tmdb-api-key', key),
   refreshMovieData: (identifier) => ipcRenderer.invoke('refresh-movie-data', identifier),
+  refreshMovieDataByTmdbId: (identifier, tmdbId) => ipcRenderer.invoke('refresh-movie-data-by-tmdb-id', { identifier, tmdbId }),
   clearScanResults: () => ipcRenderer.invoke('clear-scan-results'),
   getAppInfo: () => ipcRenderer.invoke('get-app-info'),
   openPathInExplorer: (targetPath) => ipcRenderer.invoke('open-path-in-explorer', targetPath),

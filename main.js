@@ -292,6 +292,129 @@ function getResultDisplayTitle(result, locale = config.settings?.appLocale || 'e
     || 'Unknown';
 }
 
+function resolveExistingResult(identifier, results) {
+  if (!identifier) {
+    return null;
+  }
+
+  return results.find((result) =>
+    String(result.filename) === String(identifier) ||
+    String(result.final?.id) === String(identifier) ||
+    String(result.fullApiData?.movie?.id) === String(identifier) ||
+    String(result.fullApiData?.show?.id) === String(identifier) ||
+    String(result.id) === String(identifier)
+  ) || null;
+}
+
+async function buildResultFromTmdbId(existing, tmdbId) {
+  const dirPath = existing.path ? path.dirname(existing.path) : path.resolve(__dirname, '../');
+  const isTV = existing.final?.type === 'tv' || existing.type === 'tv' || existing.parsing?.isTV;
+
+  if (isTV) {
+    const localizedPayload = {};
+    const localizationChecks = {};
+    const showDetails = await fetchTMDBResource(`tv/${tmdbId}`);
+    const localizedShowResult = await fetchLocalizedTMDBResourceWithStatus(`tv/${tmdbId}`, {}, showDetails);
+    mergeLocalizedResource(localizedPayload, 'show', localizedShowResult.localized);
+    mergeLocalizationChecks(localizationChecks, 'show', localizedShowResult.checks);
+    const credits = await fetchTMDBResource(`tv/${tmdbId}/credits`);
+    const episode = existing.parsing?.episode || existing.episode || existing.fullApiData?.episode?.episode_number;
+    const season = existing.parsing?.season || existing.season || existing.fullApiData?.episode?.season_number;
+
+    let videos = [];
+    try { videos = await fetchVideos(tmdbId, 'tv'); } catch (e) { videos = []; }
+    const fullApiData = { show: showDetails, credits, videos, localized: localizedPayload };
+
+    if (season && episode) {
+      try {
+        fullApiData.episode = await fetchTMDBResource(`tv/${tmdbId}/season/${season}/episode/${episode}`);
+        const localizedEpisodeResult = await fetchLocalizedTMDBResourceWithStatus(
+          `tv/${tmdbId}/season/${season}/episode/${episode}`,
+          {},
+          fullApiData.episode
+        );
+        mergeLocalizedResource(localizedPayload, 'episode', localizedEpisodeResult.localized);
+        mergeLocalizationChecks(localizationChecks, 'episode', localizedEpisodeResult.checks);
+      } catch (e) {
+        fullApiData.episode = existing.fullApiData?.episode || null;
+      }
+    }
+
+    fullApiData.localizationChecks = localizationChecks;
+
+    const normalized = normalizeTMDBResult({
+      id: showDetails.id,
+      media_type: 'tv',
+      name: showDetails.name,
+      first_air_date: showDetails.first_air_date,
+      poster_path: showDetails.poster_path,
+      overview: showDetails.overview,
+      popularity: showDetails.popularity,
+      vote_average: showDetails.vote_average,
+      vote_count: showDetails.vote_count,
+    });
+
+    const info = await handleMatchedResult(
+      existing.filename || existing.original_name || 'unknown',
+      normalized,
+      (showDetails.first_air_date || '').slice(0, 4),
+      dirPath,
+      false,
+      fullApiData,
+      1,
+      1,
+      true
+    );
+
+    return {
+      ...existing,
+      ...info,
+      apiInfo: existing.apiInfo || [],
+    };
+  }
+
+  const localizedPayload = {};
+  const localizationChecks = {};
+  const movieDetails = await fetchTMDBResource(`movie/${tmdbId}`);
+  const localizedMovieResult = await fetchLocalizedTMDBResourceWithStatus(`movie/${tmdbId}`, {}, movieDetails);
+  mergeLocalizedResource(localizedPayload, 'movie', localizedMovieResult.localized);
+  mergeLocalizationChecks(localizationChecks, 'movie', localizedMovieResult.checks);
+  const credits = await fetchTMDBResource(`movie/${tmdbId}/credits`);
+
+  const normalized = normalizeTMDBResult({
+    id: movieDetails.id,
+    media_type: 'movie',
+    title: movieDetails.title,
+    release_date: movieDetails.release_date,
+    poster_path: movieDetails.poster_path,
+    overview: movieDetails.overview,
+    popularity: movieDetails.popularity,
+    vote_average: movieDetails.vote_average,
+    vote_count: movieDetails.vote_count,
+  });
+
+  let videos = [];
+  try { videos = await fetchVideos(tmdbId, 'movie'); } catch (e) { videos = []; }
+
+  const info = await handleMatchedResult(
+    existing.filename || existing.original_name || 'unknown',
+    normalized,
+    (movieDetails.release_date || '').slice(0, 4),
+    dirPath,
+    false,
+    { movie: movieDetails, credits, videos, localized: localizedPayload, localizationChecks },
+    1,
+    1,
+    true
+  );
+
+  return {
+    ...existing,
+    ...info,
+    apiInfo: existing.apiInfo || [],
+  };
+}
+
 function createWindow() {
   const preloadPath = path.join(__dirname, 'preload.js');
   console.log('PRELOAD PATH:', preloadPath);
@@ -403,122 +526,23 @@ ipcMain.handle('refresh-movie-data', async (event, identifier) => {
   try {
     const activeLibrary = getActiveLibrary();
     const results = activeLibrary ? getLastScanResults(activeLibrary) : readResults();
-    let existing = null;
 
     if (!identifier) {
       return { success: false, error: 'No identifier provided' };
     }
 
-    existing = results.find(r =>
-      String(r.filename) === String(identifier) ||
-      String(r.final?.id) === String(identifier) ||
-      String(r.fullApiData?.movie?.id) === String(identifier) ||
-      String(r.fullApiData?.show?.id) === String(identifier)
-    );
+    const existing = resolveExistingResult(identifier, results);
 
     if (!existing) {
       return { success: false, error: 'Result not found' };
     }
 
-    const dirPath = existing.path ? path.dirname(existing.path) : path.resolve(__dirname, '../');
-    let resultData = null;
-
-    if (existing.final?.type === 'tv' || existing.type === 'tv' || existing.parsing?.isTV) {
-      const tvId = existing.final?.id || existing.fullApiData?.show?.id;
-      if (!tvId) {
-        return { success: false, error: 'TV ID not found' };
-      }
-
-      const localizedPayload = {};
-      const localizationChecks = {};
-      const showDetails = await fetchTMDBResource(`tv/${tvId}`);
-      const localizedShowResult = await fetchLocalizedTMDBResourceWithStatus(`tv/${tvId}`, {}, showDetails);
-      mergeLocalizedResource(localizedPayload, 'show', localizedShowResult.localized);
-      mergeLocalizationChecks(localizationChecks, 'show', localizedShowResult.checks);
-      const credits = await fetchTMDBResource(`tv/${tvId}/credits`);
-      const episode = existing.parsing?.episode || existing.episode || existing.fullApiData?.episode?.episode_number;
-      const season = existing.parsing?.season || existing.season || existing.fullApiData?.episode?.season_number;
-
-      // Fetch videos for TV show
-      let videos = [];
-      try { videos = await fetchVideos(tvId, 'tv'); } catch (e) { videos = []; }
-      let fullApiData = { show: showDetails, credits, videos, localized: localizedPayload };
-
-      if (season && episode) {
-        try {
-          fullApiData.episode = await fetchTMDBResource(`tv/${tvId}/season/${season}/episode/${episode}`);
-          const localizedEpisodeResult = await fetchLocalizedTMDBResourceWithStatus(
-            `tv/${tvId}/season/${season}/episode/${episode}`,
-            {},
-            fullApiData.episode
-          );
-          mergeLocalizedResource(localizedPayload, 'episode', localizedEpisodeResult.localized);
-          mergeLocalizationChecks(localizationChecks, 'episode', localizedEpisodeResult.checks);
-        } catch (e) {
-          fullApiData.episode = existing.fullApiData?.episode || null;
-        }
-      }
-
-      fullApiData.localizationChecks = localizationChecks;
-
-      const normalized = normalizeTMDBResult({ id: showDetails.id, media_type: 'tv', name: showDetails.name, first_air_date: showDetails.first_air_date, poster_path: showDetails.poster_path, overview: showDetails.overview, popularity: showDetails.popularity, vote_average: showDetails.vote_average, vote_count: showDetails.vote_count });
-
-      const info = await handleMatchedResult(
-        existing.filename || existing.original_name || 'unknown',
-        normalized,
-        (showDetails.first_air_date || '').slice(0, 4),
-        dirPath,
-        false,
-        fullApiData,
-        1,
-        1,
-        true
-      );
-
-      resultData = {
-        ...existing,
-        ...info,
-        apiInfo: existing.apiInfo || []
-      };
-
-    } else {
-      const movieId = existing.final?.id || existing.fullApiData?.movie?.id;
-      if (!movieId) {
-        return { success: false, error: 'Movie ID not found' };
-      }
-
-      const localizedPayload = {};
-      const localizationChecks = {};
-      const movieDetails = await fetchTMDBResource(`movie/${movieId}`);
-      const localizedMovieResult = await fetchLocalizedTMDBResourceWithStatus(`movie/${movieId}`, {}, movieDetails);
-      mergeLocalizedResource(localizedPayload, 'movie', localizedMovieResult.localized);
-      mergeLocalizationChecks(localizationChecks, 'movie', localizedMovieResult.checks);
-      const credits = await fetchTMDBResource(`movie/${movieId}/credits`);
-
-      const normalized = normalizeTMDBResult({ id: movieDetails.id, media_type: 'movie', title: movieDetails.title, release_date: movieDetails.release_date, poster_path: movieDetails.poster_path, overview: movieDetails.overview, popularity: movieDetails.popularity, vote_average: movieDetails.vote_average, vote_count: movieDetails.vote_count });
-
-      // Fetch videos for movie
-      let videos = [];
-      try { videos = await fetchVideos(movieId, 'movie'); } catch (e) { videos = []; }
-
-      const info = await handleMatchedResult(
-        existing.filename || existing.original_name || 'unknown',
-        normalized,
-        (movieDetails.release_date || '').slice(0, 4),
-        dirPath,
-        false,
-        { movie: movieDetails, credits, videos, localized: localizedPayload, localizationChecks },
-        1,
-        1,
-        true
-      );
-
-      resultData = {
-        ...existing,
-        ...info,
-        apiInfo: existing.apiInfo || []
-      };
+    const existingTmdbId = existing.final?.id || existing.fullApiData?.movie?.id || existing.fullApiData?.show?.id;
+    if (!existingTmdbId) {
+      return { success: false, error: 'TMDB ID not found' };
     }
+
+    const resultData = await buildResultFromTmdbId(existing, existingTmdbId);
 
     if (resultData) {
       addOrUpdateResult(attachLibraryToResult(resultData, activeLibrary || existing.library));
@@ -532,6 +556,37 @@ ipcMain.handle('refresh-movie-data', async (event, identifier) => {
     console.error('refresh-movie-data error', err);
     event.sender.send('scan-complete');
     return { success: false, error: err.message || 'Refresh failed' };
+  }
+});
+
+ipcMain.handle('refresh-movie-data-by-tmdb-id', async (event, payload) => {
+  try {
+    const activeLibrary = getActiveLibrary();
+    const results = activeLibrary ? getLastScanResults(activeLibrary) : readResults();
+    const identifier = payload?.identifier;
+    const rawTmdbId = String(payload?.tmdbId || '').trim();
+
+    if (!identifier) {
+      return { success: false, error: 'No identifier provided' };
+    }
+
+    if (!/^\d+$/.test(rawTmdbId)) {
+      return { success: false, error: 'TMDB ID must be numeric' };
+    }
+
+    const existing = resolveExistingResult(identifier, results);
+    if (!existing) {
+      return { success: false, error: 'Result not found' };
+    }
+
+    const resultData = await buildResultFromTmdbId(existing, rawTmdbId);
+    addOrUpdateResult(attachLibraryToResult(resultData, activeLibrary || existing.library));
+    event.sender.send('scan-complete');
+    return { success: true, result: resultData };
+  } catch (err) {
+    console.error('refresh-movie-data-by-tmdb-id error', err);
+    event.sender.send('scan-complete');
+    return { success: false, error: err.message || 'Manual TMDB fetch failed' };
   }
 });
 

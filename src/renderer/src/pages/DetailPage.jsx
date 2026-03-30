@@ -44,7 +44,7 @@ function RatingRing({ rating, size = 64 }) {
 }
 
 export default function DetailPage() {
-  const { id } = useParams();
+  const { id, type } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
   const { isOffline } = useOffline();
@@ -66,6 +66,9 @@ export default function DetailPage() {
   const [movieStorage, setMovieStorage] = useState(null);
   const [deletingItem, setDeletingItem] = useState(null);
   const [imageBrowser, setImageBrowser] = useState(null);
+  const [manualTmdbId, setManualTmdbId] = useState('');
+  const [manualTmdbStatus, setManualTmdbStatus] = useState('');
+  const [isApplyingTmdbId, setIsApplyingTmdbId] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -177,6 +180,12 @@ export default function DetailPage() {
     return () => { cancelled = true; };
   }, [movie, showTrailers, isOffline]);
 
+  useEffect(() => {
+    const currentTmdbId = movie?.final?.id || movie?.fullApiData?.movie?.id || movie?.fullApiData?.show?.id || '';
+    setManualTmdbId(currentTmdbId ? String(currentTmdbId) : '');
+    setManualTmdbStatus('');
+  }, [movie]);
+
   // Check which trailers are already downloaded
   useEffect(() => {
     if (trailers.length === 0 || !window.api?.getTrailerStatuses) return;
@@ -252,6 +261,39 @@ export default function DetailPage() {
       setError(err.message || t('detailPage.refresh.requestFailed'));
     } finally {
       setIsRefreshing(false);
+    }
+  };
+
+  const handleApplyManualTmdbId = async () => {
+    if (!window.api?.refreshMovieDataByTmdbId || !movie) return;
+    const nextTmdbId = manualTmdbId.trim();
+    const identifier = movie.id || movie.filename || movie.final?.id || movie.fullApiData?.movie?.id || movie.fullApiData?.show?.id;
+
+    if (!/^\d+$/.test(nextTmdbId)) {
+      setManualTmdbStatus(t('detailPage.manualTmdbId.invalid'));
+      return;
+    }
+
+    setIsApplyingTmdbId(true);
+    setError(null);
+    setManualTmdbStatus('');
+    try {
+      const response = await window.api.refreshMovieDataByTmdbId(identifier, nextTmdbId);
+      if (!response?.success || !response.result) {
+        setManualTmdbStatus(response?.error || t('detailPage.manualTmdbId.failed'));
+        return;
+      }
+
+      setMovie(response.result);
+      setRefreshMessage(t('detailPage.manualTmdbId.updated'));
+      setManualTmdbStatus(t('detailPage.manualTmdbId.updated'));
+      const nextType = response.result.final?.type || movie.final?.type || type || 'movie';
+      const nextId = response.result.final?.id || response.result.fullApiData?.movie?.id || response.result.fullApiData?.show?.id || nextTmdbId;
+      navigate(`/detail/${nextType}/${nextId}`, { replace: true, state: { movie: response.result } });
+    } catch (err) {
+      setManualTmdbStatus(err?.message || t('detailPage.manualTmdbId.failed'));
+    } finally {
+      setIsApplyingTmdbId(false);
     }
   };
 
@@ -352,6 +394,7 @@ export default function DetailPage() {
   const episodeTitle = getEpisodeTitle(movie, locale);
   const episodeOverview = getEpisodeOverview(movie, locale);
   const resolution = getResolution(movie);
+  const currentTmdbId = movie.final?.id || movie.fullApiData?.movie?.id || movie.fullApiData?.show?.id || null;
 
   const tabs = [
     { id: 'overview', label: t('detailPage.tabs.overview'), icon: <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 4h12M2 8h12M2 12h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg> },
@@ -666,6 +709,7 @@ export default function DetailPage() {
                 <h3>{t('detailPage.information')}</h3>
                 <table className="dp-detail-table">
                   <tbody>
+                    {currentTmdbId && <tr><td>{t('detailPage.labels.tmdbId')}</td><td>{currentTmdbId}</td></tr>}
                     {originalTitle && originalTitle !== title && <tr><td>{t('detailPage.labels.originalTitle')}</td><td>{originalTitle}</td></tr>}
                     {originalLanguage && <tr><td>{t('detailPage.labels.language')}</td><td>{originalLanguage.toUpperCase()}</td></tr>}
                     {status && <tr><td>{t('detailPage.labels.status')}</td><td>{translateStatus(status)}</td></tr>}
@@ -674,6 +718,31 @@ export default function DetailPage() {
                     {homepage && <tr><td>{t('detailPage.labels.homepage')}</td><td><a href={homepage} target="_blank" rel="noopener noreferrer">{t('detailPage.visit')}</a></td></tr>}
                   </tbody>
                 </table>
+                <div className="dp-manual-tmdb">
+                  <label className="dp-manual-tmdb-label" htmlFor="manualTmdbId">{t('detailPage.manualTmdbId.label')}</label>
+                  <div className="dp-manual-tmdb-row">
+                    <input
+                      id="manualTmdbId"
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      value={manualTmdbId}
+                      onChange={(event) => setManualTmdbId(event.target.value.replace(/\D+/g, ''))}
+                      placeholder={t('detailPage.manualTmdbId.placeholder')}
+                      className="dp-manual-tmdb-input"
+                    />
+                    <button
+                      className="dp-btn dp-btn-ghost dp-btn-sm"
+                      onClick={handleApplyManualTmdbId}
+                      disabled={isApplyingTmdbId || isOffline}
+                      title={isOffline ? t('detailPage.refresh.unavailableOffline') : t('detailPage.manualTmdbId.button')}
+                    >
+                      {isApplyingTmdbId ? t('common.refreshing') : t('detailPage.manualTmdbId.button')}
+                    </button>
+                  </div>
+                  <p className="dp-manual-tmdb-help">{t('detailPage.manualTmdbId.help')}</p>
+                  {manualTmdbStatus && <div className="dp-manual-tmdb-status">{manualTmdbStatus}</div>}
+                </div>
               </div>
 
               {(budget || revenue) && (
