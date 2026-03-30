@@ -69,6 +69,9 @@ export default function DetailPage() {
   const [manualTmdbId, setManualTmdbId] = useState('');
   const [manualTmdbStatus, setManualTmdbStatus] = useState('');
   const [isApplyingTmdbId, setIsApplyingTmdbId] = useState(false);
+  const [manualTmdbQuery, setManualTmdbQuery] = useState('');
+  const [tmdbCandidates, setTmdbCandidates] = useState([]);
+  const [isSearchingTmdb, setIsSearchingTmdb] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -183,8 +186,10 @@ export default function DetailPage() {
   useEffect(() => {
     const currentTmdbId = movie?.final?.id || movie?.fullApiData?.movie?.id || movie?.fullApiData?.show?.id || '';
     setManualTmdbId(currentTmdbId ? String(currentTmdbId) : '');
+    setManualTmdbQuery(getMediaTitle(movie || {}, locale) || '');
+    setTmdbCandidates([]);
     setManualTmdbStatus('');
-  }, [movie]);
+  }, [movie, locale]);
 
   // Check which trailers are already downloaded
   useEffect(() => {
@@ -264,9 +269,9 @@ export default function DetailPage() {
     }
   };
 
-  const handleApplyManualTmdbId = async () => {
+  const handleApplyManualTmdbId = async (overrideTmdbId = null) => {
     if (!window.api?.refreshMovieDataByTmdbId || !movie) return;
-    const nextTmdbId = manualTmdbId.trim();
+    const nextTmdbId = String(overrideTmdbId || manualTmdbId).trim();
     const identifier = movie.id || movie.filename || movie.final?.id || movie.fullApiData?.movie?.id || movie.fullApiData?.show?.id;
 
     if (!/^\d+$/.test(nextTmdbId)) {
@@ -294,6 +299,37 @@ export default function DetailPage() {
       setManualTmdbStatus(err?.message || t('detailPage.manualTmdbId.failed'));
     } finally {
       setIsApplyingTmdbId(false);
+    }
+  };
+
+  const handleSearchTmdbByName = async () => {
+    if (!window.api?.searchTmdbByName) return;
+    const query = manualTmdbQuery.trim();
+    if (query.length < 2) {
+      setManualTmdbStatus(t('detailPage.manualTmdbId.searchTooShort'));
+      return;
+    }
+
+    setIsSearchingTmdb(true);
+    setManualTmdbStatus('');
+    try {
+      const mediaType = (movie?.final?.type || movie?.type || type) === 'tv' ? 'tv' : 'movie';
+      const year = movie?.final?.year || movie?.parsing?.year || '';
+      const response = await window.api.searchTmdbByName(query, mediaType, year);
+      if (!response?.success) {
+        setTmdbCandidates([]);
+        setManualTmdbStatus(response?.error || t('detailPage.manualTmdbId.searchFailed'));
+        return;
+      }
+      setTmdbCandidates(response.results || []);
+      if ((response.results || []).length === 0) {
+        setManualTmdbStatus(t('detailPage.manualTmdbId.noResults'));
+      }
+    } catch (err) {
+      setTmdbCandidates([]);
+      setManualTmdbStatus(err?.message || t('detailPage.manualTmdbId.searchFailed'));
+    } finally {
+      setIsSearchingTmdb(false);
     }
   };
 
@@ -722,6 +758,24 @@ export default function DetailPage() {
                   <label className="dp-manual-tmdb-label" htmlFor="manualTmdbId">{t('detailPage.manualTmdbId.label')}</label>
                   <div className="dp-manual-tmdb-row">
                     <input
+                      id="manualTmdbQuery"
+                      type="text"
+                      value={manualTmdbQuery}
+                      onChange={(event) => setManualTmdbQuery(event.target.value)}
+                      placeholder={t('detailPage.manualTmdbId.searchPlaceholder')}
+                      className="dp-manual-tmdb-input"
+                    />
+                    <button
+                      className="dp-btn dp-btn-ghost dp-btn-sm"
+                      onClick={handleSearchTmdbByName}
+                      disabled={isSearchingTmdb || isOffline}
+                      title={isOffline ? t('detailPage.refresh.unavailableOffline') : t('detailPage.manualTmdbId.searchButton')}
+                    >
+                      {isSearchingTmdb ? t('common.loading') : t('detailPage.manualTmdbId.searchButton')}
+                    </button>
+                  </div>
+                  <div className="dp-manual-tmdb-row">
+                    <input
                       id="manualTmdbId"
                       type="text"
                       inputMode="numeric"
@@ -741,6 +795,23 @@ export default function DetailPage() {
                     </button>
                   </div>
                   <p className="dp-manual-tmdb-help">{t('detailPage.manualTmdbId.help')}</p>
+                  {tmdbCandidates.length > 0 && (
+                    <div className="dp-tmdb-candidates">
+                      {tmdbCandidates.map((candidate) => (
+                        <button
+                          key={`${candidate.mediaType}_${candidate.id}`}
+                          className="dp-tmdb-candidate"
+                          onClick={() => {
+                            setManualTmdbId(String(candidate.id));
+                            handleApplyManualTmdbId(String(candidate.id));
+                          }}
+                        >
+                          <span className="dp-tmdb-candidate-title" dir="auto">{candidate.title}</span>
+                          <span className="dp-tmdb-candidate-meta">#{candidate.id}{candidate.year ? ` • ${candidate.year}` : ''} • {candidate.voteAverage?.toFixed?.(1) || '0.0'}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   {manualTmdbStatus && <div className="dp-manual-tmdb-status">{manualTmdbStatus}</div>}
                 </div>
               </div>

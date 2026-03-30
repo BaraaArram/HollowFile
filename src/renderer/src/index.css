@@ -1461,6 +1461,41 @@ a {
   font-size: 0.82rem;
   font-weight: 600;
 }
+.dp-tmdb-candidates {
+  margin-top: 0.7rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-height: 220px;
+  overflow: auto;
+  padding-right: 4px;
+}
+.dp-tmdb-candidate {
+  text-align: start;
+  width: 100%;
+  border: 1px solid rgba(255,255,255,0.09);
+  background: rgba(255,255,255,0.04);
+  color: var(--hk-text);
+  border-radius: 10px;
+  padding: 0.55rem 0.7rem;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  transition: background 0.2s, border-color 0.2s;
+}
+.dp-tmdb-candidate:hover {
+  background: rgba(34,211,238,0.08);
+  border-color: rgba(34,211,238,0.3);
+}
+.dp-tmdb-candidate-title {
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+.dp-tmdb-candidate-meta {
+  font-size: 0.76rem;
+  color: var(--hk-text-muted);
+}
 
 /* ---- TRAILERS TAB ---- */
 .dp-trailers { padding: 0; }

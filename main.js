@@ -590,6 +590,47 @@ ipcMain.handle('refresh-movie-data-by-tmdb-id', async (event, payload) => {
   }
 });
 
+ipcMain.handle('search-tmdb-by-name', async (event, payload) => {
+  try {
+    const query = String(payload?.query || '').trim();
+    const mediaType = payload?.mediaType === 'tv' ? 'tv' : 'movie';
+    const year = String(payload?.year || '').trim();
+
+    if (!query || query.length < 2) {
+      return { success: false, error: 'Query is too short' };
+    }
+
+    const endpoint = `search/${mediaType}`;
+    const params = { query };
+    if (year && /^\d{4}$/.test(year)) {
+      if (mediaType === 'movie') {
+        params.year = year;
+      } else {
+        params.first_air_date_year = year;
+      }
+    }
+
+    const data = await fetchTMDBResource(endpoint, params);
+    const results = (data?.results || []).slice(0, 12).map((item) => ({
+      id: item.id,
+      mediaType,
+      title: item.title || item.name || 'Unknown',
+      originalTitle: item.original_title || item.original_name || null,
+      year: (item.release_date || item.first_air_date || '').slice(0, 4) || null,
+      overview: item.overview || '',
+      posterPath: item.poster_path || null,
+      popularity: item.popularity || 0,
+      voteAverage: item.vote_average || 0,
+      voteCount: item.vote_count || 0,
+    }));
+
+    return { success: true, results };
+  } catch (error) {
+    console.error('search-tmdb-by-name error', error);
+    return { success: false, error: error.message || 'TMDB search failed' };
+  }
+});
+
 // Bulk refresh all cached metadata with localized data
 ipcMain.handle('refresh-all-metadata', async (event) => {
   try {
