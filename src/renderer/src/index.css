@@ -618,14 +618,14 @@ a {
   z-index: 100;
 }
 
-.hk-navbar a {
+.hk-navbar .nav-link {
   color: var(--hk-text);
   font-weight: 600;
   padding: 0.5rem 1.2rem;
   border-radius: 12px;
   transition: background 0.2s, color 0.2s;
 }
-.hk-navbar a.active, .hk-navbar a:hover {
+.hk-navbar .nav-link.active, .hk-navbar .nav-link:hover {
   background: linear-gradient(135deg, var(--hk-accent), var(--hk-accent-strong));
   color: #020617;
 }
@@ -1754,6 +1754,35 @@ a {
   background: linear-gradient(135deg, var(--hk-accent), var(--hk-accent-strong));
   color: #020617;
 }
+.nav-icon-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--hk-border);
+  color: var(--hk-text-muted);
+  text-decoration: none;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+.nav-icon-link svg {
+  display: block;
+  flex-shrink: 0;
+}
+.nav-icon-link:hover {
+  background: rgba(255,255,255,0.08);
+  color: var(--hk-accent);
+  border-color: rgba(34,211,238,0.3);
+}
+.nav-icon-link.active {
+  background: linear-gradient(135deg, var(--hk-accent), var(--hk-accent-strong));
+  border-color: transparent;
+  color: #020617;
+}
 .nav-right {
   display: flex;
   align-items: center;
@@ -1820,21 +1849,6 @@ a {
   font-weight: 700;
   letter-spacing: 0.06em;
 }
-.nav-settings {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
-  color: var(--hk-text-muted);
-  transition: all 0.2s;
-}
-.nav-settings:hover {
-  color: var(--hk-accent);
-  background: rgba(255,255,255,0.06);
-}
-
 /* ========================================================
    MOVIE CARD — mc-* prefix
    ======================================================== */
@@ -4655,6 +4669,12 @@ a {
   height: 100%;
   object-fit: cover;
 }
+.stg-item-thumb video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
 .stg-item-thumb-wide {
   width: 100px;
   height: 56px;
@@ -4727,6 +4747,12 @@ a {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+.dp-item-thumb video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 .dp-item-thumb-wide {
   width: 86px;

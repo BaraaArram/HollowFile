@@ -30,6 +30,18 @@ function toFileUrl(p) {
   return `file://${normalized}`;
 }
 
+function toLocalFileUrl(localPath) {
+  if (!localPath) return '';
+  const normalized = String(localPath).replace(/\\/g, '/');
+  if (normalized.startsWith('file://')) return normalized;
+  if (normalized.match(/^[a-z]:/i)) {
+    const parts = normalized.split('/');
+    const encoded = parts[0] + '/' + parts.slice(1).map(segment => encodeURIComponent(segment)).join('/');
+    return `file:///${encoded}`;
+  }
+  return `file://${encodeURI(normalized)}`;
+}
+
 export default function ShowDetailPage() {
   const { showId } = useParams();
   const navigate = useNavigate();
@@ -240,7 +252,15 @@ export default function ShowDetailPage() {
                     onClick={() => !unavailableOffline && handlePlayTrailer(v.key)}
                   >
                     <div className="dp-trailer-card-thumb">
-                      {!isOffline ? (
+                      {isOffline && canPlay && status?.path ? (
+                        <video
+                          className="dp-trailer-card-img"
+                          src={toLocalFileUrl(status.path)}
+                          preload="metadata"
+                          muted
+                          playsInline
+                        />
+                      ) : !isOffline ? (
                         <img src={`https://img.youtube.com/vi/${v.key}/hqdefault.jpg`} alt={v.name} className="dp-trailer-card-img" loading="lazy" />
                       ) : (
                         <div className="dp-trailer-card-img dp-trailer-thumb-offline">

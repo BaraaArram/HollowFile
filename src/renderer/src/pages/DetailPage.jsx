@@ -12,6 +12,18 @@ function getResolution(file) {
   return match ? match[0].toUpperCase() : null;
 }
 
+function toLocalFileUrl(localPath) {
+  if (!localPath) return '';
+  const normalized = String(localPath).replace(/\\/g, '/');
+  if (normalized.startsWith('file://')) return normalized;
+  if (normalized.match(/^[a-z]:/i)) {
+    const parts = normalized.split('/');
+    const encoded = parts[0] + '/' + parts.slice(1).map(segment => encodeURIComponent(segment)).join('/');
+    return `file:///${encoded}`;
+  }
+  return `file://${encodeURI(normalized)}`;
+}
+
 function RatingRing({ rating, size = 64 }) {
   const pct = (rating / 10) * 100;
   const r = (size - 8) / 2;
@@ -579,7 +591,15 @@ export default function DetailPage() {
                           onClick={() => !unavailableOffline && handlePlayTrailer(v.key)}
                         >
                           <div className="dp-trailer-card-thumb">
-                            {!isOffline ? (
+                            {isOffline && canPlay && status?.path ? (
+                              <video
+                                className="dp-trailer-card-img"
+                                src={toLocalFileUrl(status.path)}
+                                preload="metadata"
+                                muted
+                                playsInline
+                              />
+                            ) : !isOffline ? (
                               <img
                                 src={`https://img.youtube.com/vi/${v.key}/hqdefault.jpg`}
                                 alt={v.name}
@@ -707,7 +727,9 @@ export default function DetailPage() {
                             )}
                             {isTrailerPreview && (
                               <div className="dp-item-thumb dp-item-thumb-wide dp-item-thumb-video">
-                                {!isOffline ? (
+                                {isOffline && item.path ? (
+                                  <video src={toLocalFileUrl(item.path)} muted preload="metadata" playsInline />
+                                ) : !isOffline ? (
                                   <img src={`https://img.youtube.com/vi/${item.videoKey}/mqdefault.jpg`} alt="" />
                                 ) : (
                                   <div className="dp-trailer-thumb-offline" style={{ height: '100%' }}>

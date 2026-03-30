@@ -21,6 +21,18 @@ const TYPE_ICONS = {
   result: { color: '#6b7280', label: 'storagePage.type.metadata' },
 };
 
+function toLocalFileUrl(localPath) {
+  if (!localPath) return '';
+  const normalized = String(localPath).replace(/\\/g, '/');
+  if (normalized.startsWith('file://')) return normalized;
+  if (normalized.match(/^[a-z]:/i)) {
+    const parts = normalized.split('/');
+    const encoded = parts[0] + '/' + parts.slice(1).map(segment => encodeURIComponent(segment)).join('/');
+    return `file:///${encoded}`;
+  }
+  return `file://${encodeURI(normalized)}`;
+}
+
 export default function StoragePage() {
   const navigate = useNavigate();
   const { t, locale, formatBytes, formatNumber, translateMediaType } = useI18n();
@@ -412,7 +424,7 @@ export default function StoragePage() {
                               )}
                               {isTrailerPreview && (
                                 <div className="stg-item-thumb stg-item-thumb-wide stg-item-thumb-video">
-                                  <img src={`https://img.youtube.com/vi/${item.videoKey}/mqdefault.jpg`} alt="" />
+                                  <video src={toLocalFileUrl(item.path)} muted preload="metadata" playsInline />
                                   <svg className="stg-item-play" width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
                                 </div>
                               )}
